@@ -1,0 +1,18 @@
+name: AttributePotion
+version: '${version}'
+main: me.chenfeng.attributepotion.AttributePotion
+softdepend:
+  - AttributePlus
+  - SX-Attribute
+  - DragonCore
+  - GermPlugin
+  - SkillAPI
+  - PlaceholderAPI
+  - NBTAPI
+  - CloudPick
+  - Yetzirah
+commands:
+  AttributePotion:
+    permission: admin
+    aliases:
+      - apn

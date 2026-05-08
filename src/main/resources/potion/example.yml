@@ -1,0 +1,91 @@
+# 药水节点名，不可重复
+测试药水:
+  # match识别的内容，不填的话默认为节点名
+  match: '&a测试药水'
+  # 药水所属药水组(可选)
+  group: '初级药水组'
+  # 药水冷却时间，单位/秒(默认是0,double类型，可写小数)
+  cooldown: 30.0
+  # 按键专用：按压时长，单位/秒(默认是0,double类型，可写小数)
+  press: 0
+  # 触发器设置,什么行为才能使用药水
+  triggers:
+    - ALL # 写ALL表示以下所有行为都可以触发
+    - LEFT_CLICK_AIR # 左键空气
+    - LEFT_CLICK_BLOCK # 左键方块
+    - RIGHT_CLICK_AIR # 右键空气
+    - RIGHT_CLICK_BLOCK # 右键方块
+    - KEY # 按键执行,需要龙核/萌芽/云拾支持。兼容旧写法: DRAGON/GERM/CLOUD
+  # 使用药水的条件，可以用变量，支持运算，后面是条件不满足时发送的消息
+  conditions:
+    - '%player_level%>=10<->&c你的等级不足10级,无法使用{id}!'
+    - '"%player_has_permission_vip%"=="yes"<->&c你没有VIP权限，无法使用{id}!'
+  # 药水属性持续时间，单位是秒，可写小数，写-1的话表示永久属性,不写默认为0立即使用
+  # regen和effect里所写的时间无法超过此处的time
+  time: 10.0
+  # 药水添加的属性，格式是 【属性: 数值】，不支持xx-xx格式
+  # 可以用变量，支持运算。你也可以用math拓展进行运算，例如%math_0_{player_level}*2+10%(可选)
+  # 为了考虑兼容性,不支持百分比加成.如果你是AP3,可以用AP的指令加属性
+  attributes:
+    物理伤害: "100"
+    生命力: "%player_level%*2+100"
+  # 原版药水效果
+  effects:
+    # 药水效果: '药水等级-持续时间' ，例如这个是给予1级夜视效果，持续10秒，用{time}可以取上面写的药水属性持续时间
+    # 药水效果参见https://bukkit.windit.net/javadoc/org/bukkit/potion/PotionEffectType.html
+    NIGHT_VISION: '1<->10'
+  # 使用后的恢复效果(可选)
+  regen:
+    # 三个参数分别是数值，时间，模式，用{time}可以取上面写的药水属性持续时间,这里的时间只能是整数,且最大值不超过上面的time
+    # 回复生命值，写0表示立即回复，写负数也可以，就是扣除生命
+    # 0表示固定数值回复，例如这里表示每秒回复10点，持续5秒
+    # 1表示当前生命百分比回复，写1表示每秒回复当前生命的10%，持续5秒
+    # 2表示最大生命百分比回复，写2表示每秒回复最大生命的10%，持续5秒
+    health: '10<->5<->2'
+    # 回复SkillAPI/Yet的魔力值
+    mana: '10<->{time}<->1'
+    # 回复饥饿值
+    hunger: '2<->5<->0'
+  # 使用药水执行的指令，console表示以控制台执行，op表示管理员身份执行(非常不建议使用),不写表示玩家身份执行(可选)
+  actions:
+    # 成功使用药水后执行
+    success:
+      - '[msg]&a成功使用了{id}!奖励你一个钻石'
+      - '[console]give %player_name% diamond 1'
+      - '[op]spawn'
+      - '[title]大标题<->小标题<->20<->60<->20' # 格式是大标题#小标题#淡入时间#持续时间#淡出时间
+      - '[actionbar]这是actionbar'
+      - '[bossbar]这是bossbar<->BLUE<->SEGMENTED_10<->10' # 格式是标题#颜色#条数#持续时间,写-1会一直显示直到下线
+    # 药水结束后执行
+    end:
+      - '[msg]&c{id}效果结束了!送给你一个泥土'
+      - '[console]give %player_name% dirt 1'
+    tick:
+      20:
+        - '[msg]&a每秒执行一次指令'
+      100:
+        - '[msg]&a每五秒执行一次指令'
+  # 范围大小（可选，需要你启用下面的给范围内所有玩家添加药水，默认0）
+  distance: 10.0
+  # 其他设置
+  optional:
+    # 使用药水后是否消耗
+    consume: true
+    # 药水效果是否可覆盖,不允许覆盖的话玩家身上还存在药水属性效果时不允许使用该药水
+    cover: true
+    # 是否需要蹲下才能使用
+    shift: false
+    # 死亡后是否清除药水属性/恢复状态,并触发药水结束指令,对持续时间为-1的无效
+    death: false
+    # 退出服务器后是否清除药水属性/恢复状态
+    quit: false
+    # 是否设置物品冷却。这是原版的那种，较为直观展示冷却时间，但是会导致同类型材料的物品显示一同进入冷却
+    cool: false
+    # 是否范围内所有玩家享受药水效果
+    range: false
+    # 是否显示该药水的剩余时间 BossBar
+    bossbar: false
+    # 药水nbt次数消耗完时物品是否移除
+    break: false
+
+测试按住药水:

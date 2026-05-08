@@ -1,0 +1,36 @@
+match: hud
+updateInterval: 10
+visible: 方法.取变量('apn_progress') > 0
+##############################################
+bg:
+  type: texture
+  x: (w - temp.component.width)*0.5
+  y: h*0.6
+  width: w*0.4
+  height: h*0.15
+  texture: 0,0,0,255
+
+正在使用_label:
+  x: bg.x + bg.width*0.5
+  y: bg.y + bg.height*0.2
+  center: true
+  scale: bg.width*0.005
+  texts:
+    - "'正在使用 ' & 方法.取变量('apn_display') & ' §f...'"
+
+进度底图_texture:
+  x: bg.x + bg.width*0.1
+  y: bg.y + bg.height*0.7
+  width: bg.width*0.8
+  height: bg.height*0.2
+  texture: 50,50,50
+进度条_texture:
+  x: 进度底图_texture.x
+  y: 进度底图_texture.y
+  width: 进度底图_texture.width
+  height: 进度底图_texture.height
+  texture: 0,139,69
+  limitX: 0
+  limitY: 0
+  limitWidth: temp.component.x + temp.component.width*方法.min(1, 方法.取变量('apn_progress'))
+  limitHeight: h

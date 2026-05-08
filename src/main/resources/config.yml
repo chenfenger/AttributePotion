@@ -1,0 +1,87 @@
+# 是否输出 debug 日志
+debug: false
+
+# 进服数据加载延迟，单位 tick，20 tick = 1 秒
+load-delay: 60
+
+# 数据库设置
+mysql:
+  # 是否启用 MySQL 存储，false 则使用 SQLite 存储
+  enable: false
+  host: localhost
+  port: 3306
+  username: root
+  password: root
+  file_name: AttributePotion
+  table_name: data
+  # MySQL 5 使用: com.mysql.jdbc.Driver
+  # MySQL 8 使用: com.mysql.cj.jdbc.Driver
+  driver: 'com.mysql.jdbc.Driver'
+  jdbc: '?useSSL=false&useUnicode=true&characterEncoding=utf8'
+
+# 属性插件类型，可选: AP3/AP2/SX3/SX2
+attribute-plugin: 'AP3'
+
+# 匹配方式，可选: name/lore/nbt。推荐 nbt，其次 name，不推荐 lore
+match-mode: 'name'
+
+# 是否仅包含匹配内容即可，false则整个需要匹配(建议改为false提升匹配性能)
+contain: true
+
+# NBT 键名
+nbt-key: 'apn'
+# 药水次数的nbt,有这个配置时消耗物品是扣除次数。所以注意使用不可叠加物品
+# 例如
+#nbt:
+#  apn_count: 10
+nbt-count: 'apn_count'
+
+# 分隔符
+split: '<->'
+
+# 设置龙核/萌芽/云拾按键及对应槽位
+key-slots:
+  Z: '额外槽位1'
+  X: '额外槽位2'
+  C: '额外槽位3'
+
+# 设置哪些物品消耗后才执行药水效果，例如原版食物/药水
+consumable-types:
+  - 'APPLE'
+
+# 是否启用药水组固定冷却时间：
+# true 取下方组冷却时间；false 取药水自身冷却时间
+# 例如 A 药水冷却 5 秒，B 药水冷却 20 秒，同属于初级药水组：
+# - true: 使用 A 后，初级药水组进入 10 秒冷却
+# - false: 使用 A 后，初级药水组进入 5 秒冷却(A的冷却时间)
+fixed-group-cooldown: true
+
+# 药水剩余时间 BossBar 显示
+bossbar:
+  title: '&b%potion% &f剩余 &a%remaining%秒'
+  color: BLUE
+  style: SEGMENTED_10
+  update-interval: 20
+
+# 药水组设置：每个药水有单独冷却，同组药水共享组冷却,单位秒
+group-cooldowns:
+  初级药水组: 10
+  中级药水组: 30
+  高级药水组: 60
+
+# 消息发送冷却间隔,防止刷屏,单位毫秒
+message-cooldown: 500
+# 消息设置，留空则不发送
+messages:
+  reload: "&b[属性药水]&a插件配置重载成功!"
+  shift: '&b[属性药水]&a请按住shift再使用药水!'
+  add-time: '&b[属性药水]&a已为玩家&6 %player% &a增加 %potion% 属性时长 %time% 秒'
+  use-potion: "&b[属性药水]&a成功为玩家&6 %player% &a添加 %potion% &a效果，持续&e %time% &a秒"
+  use-deny: "&b[属性药水]&c您不满足 %id% &c药水的使用条件!"
+  cover-deny: "&b[属性药水]&c已存在 %id% &c药水效果,请效果消失后再使用!"
+  out-potion: "&b[属性药水]%potion% &5效果已结束!"
+  on-potion-cooldown: "&b[属性药水]&b%potion% &7冷却中，剩余&e %cooldown% &7秒!"
+  on-group-cooldown: "&b[属性药水]&b%group% &7冷却中，剩余&e %cooldown% &7秒!"
+  near-potion: '&b[属性药水]&7成功为&e %range% &7格范围内的玩家：&6%playerList% &7使用了&b %potion%'
+  other-potion: '&b[属性药水]&7您享受到来自&6 %player% &7的&b %potion% &7属性效果!'
+  load-data: '&b[属性药水]&a数据加载完成'
