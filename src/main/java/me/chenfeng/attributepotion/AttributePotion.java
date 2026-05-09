@@ -9,6 +9,7 @@ import me.chenfeng.attributepotion.hook.mana.SkillApiManaHook;
 import me.chenfeng.attributepotion.hook.mana.YetzirahManaHook;
 import me.chenfeng.attributepotion.listener.DataListener;
 import me.chenfeng.attributepotion.listener.PotionUseListener;
+import me.chenfeng.attributepotion.listener.hook.ArcartXListener;
 import me.chenfeng.attributepotion.listener.hook.CloudPickListener;
 import me.chenfeng.attributepotion.listener.hook.DragonCoreListener;
 import me.chenfeng.attributepotion.listener.hook.GermPluginListener;
@@ -134,6 +135,9 @@ public final class AttributePotion extends JavaPlugin {
         }
         if (Bukkit.getPluginManager().getPlugin("GermPlugin") != null) {
             Bukkit.getPluginManager().registerEvents(new GermPluginListener(), this);
+        }
+        if (Bukkit.getPluginManager().getPlugin("ArcartX") != null) {
+            new ArcartXListener();
         }
     }
 

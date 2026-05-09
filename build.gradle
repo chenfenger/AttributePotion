@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'chenfeng'
-version = '3.0.0'
+version = '3.0.0-SNAPSHOT'
 
 repositories {
     mavenCentral()
@@ -51,8 +51,9 @@ dependencies {
     implementation "net.objecthunter:exp4j:0.4.8"
     implementation "com.zaxxer:HikariCP:4.0.3"
     implementation "com.google.code.gson:gson:2.10.1"
-    implementation "org.xerial:sqlite-jdbc:3.46.1.0"
-    implementation "com.mysql:mysql-connector-j:8.0.33"
+    compileOnly "org.xerial:sqlite-jdbc:3.46.1.0"
+    compileOnly "com.mysql:mysql-connector-j:8.0.33"
+
 }
 
 def targetJavaVersion = 8
