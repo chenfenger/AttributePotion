@@ -2,6 +2,7 @@ package me.chenfeng.attributepotion.listener.hook;
 
 import me.chenfeng.attributepotion.manager.ConfigManager;
 import me.chenfeng.attributepotion.utils.LoggerUtil;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
@@ -154,7 +155,9 @@ public class ArcartXListener {
 
     private void setSlotItemStack(Object arcartXPlayer, String slot, ItemStack itemStack) {
         try {
-            setSlotItemStackMethod.invoke(arcartXPlayer, slot, itemStack);
+            // ArcartX 的槽位写入方法不接受 null，清空槽位时用 AIR 表示空物品。
+            ItemStack updatedItem = itemStack == null ? new ItemStack(Material.AIR) : itemStack;
+            setSlotItemStackMethod.invoke(arcartXPlayer, slot, updatedItem);
         } catch (ReflectiveOperationException e) {
             LoggerUtil.warning("[AttributePotion] Failed to update ArcartX slot item: " + e.getMessage());
         }

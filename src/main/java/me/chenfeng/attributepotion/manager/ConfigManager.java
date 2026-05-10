@@ -212,6 +212,16 @@ public class ConfigManager {
     }
 
     /**
+     * 判断指定药水组是否配置了独立冷却。
+     *
+     * @param group 药水组名
+     * @return 已配置时返回 true
+     */
+    public static boolean hasGroupCooldown(@NonNull String group) {
+        return groupCooldownMap.containsKey(group);
+    }
+
+    /**
      * 根据键名获取药水数据
      * 
      * @param key 药水数据的键名
