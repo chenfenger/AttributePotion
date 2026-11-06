@@ -79,7 +79,7 @@ public class SqlManager {
         if (mysql) {
             String host = config.getString("mysql.host", config.getString("MySQL.host", "localhost"));
             int port = config.getInt("mysql.port", config.getInt("MySQL.port", 3306));
-            String driver = config.getString("mysql.driver", config.getString("MySQL.driver", "com.mysql.cj.jdbc.Driver"));
+            String driver = config.getString("mysql.driver", config.getString("MySQL.driver", "com.mysql.jdbc.Driver"));
             String jdbc = config.getString("mysql.jdbc", config.getString("MySQL.jdbc", "?useSSL=false&useUnicode=true&characterEncoding=utf8"));
             hikariConfig.setDriverClassName(driver);
             hikariConfig.setJdbcUrl("jdbc:mysql://" + host + ":" + port + "/" + database + jdbc);
