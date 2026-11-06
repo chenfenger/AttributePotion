@@ -2,7 +2,7 @@
 
 AttributePotion 是一个面向 Bukkit/Spigot/Paper 的属性药水插件。插件可以通过物品名称、Lore 或 NBT 识别药水，使用后为玩家添加属性、原版药水效果、恢复效果、命令动作、冷却、BossBar 显示等。
 
-当前版本面向 Java 8 构建，主要兼容 1.12.2 服务端环境。
+支持 1.12.2 到 1.21.x 服务端。项目以 Java 8 和 1.12.2 API 构建。
 
 完整文档见 [Wiki](wiki/Home.md)。
 
@@ -364,7 +364,7 @@ gradlew.bat build
 build/libs/AttributePotion-版本号.jar
 ```
 
-jar 内置 HikariCP、Gson、exp4j，不内置数据库驱动：1.12.2 服务端自带 SQLite 和 MySQL 5 驱动，要用 MySQL 8 驱动需要自己提供给服务端。
+jar 内置 HikariCP、Gson、exp4j，不内置数据库驱动，使用服务端自带的 SQLite 和 MySQL 驱动。
 
 构建前需要把没有公开仓库的依赖放进 `libs/`，见 [安装与构建](wiki/安装与构建.md)。
 

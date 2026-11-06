@@ -1,6 +1,7 @@
 name: AttributePotion
 version: '${version}'
 main: me.chenfeng.attributepotion.AttributePotion
+api-version: '1.13'
 softdepend:
   - AttributePlus
   - SX-Attribute
