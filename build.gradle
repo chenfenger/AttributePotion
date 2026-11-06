@@ -46,7 +46,7 @@ dependencies {
     compileOnly 'org.projectlombok:lombok:1.18.36'
     annotationProcessor 'org.projectlombok:lombok:1.18.36'
     compileOnly 'me.clip:placeholderapi:2.11.6'
-    compileOnly 'de.tr7zw:item-nbt-api-plugin:+'
+    compileOnly 'de.tr7zw:item-nbt-api-plugin:2.13.2'
     compileOnly fileTree(dir: 'libs', include: ['*.jar'])
     implementation "net.objecthunter:exp4j:0.4.8"
     implementation "com.zaxxer:HikariCP:4.0.3"

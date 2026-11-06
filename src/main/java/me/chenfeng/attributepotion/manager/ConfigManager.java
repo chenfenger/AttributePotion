@@ -10,6 +10,7 @@ import me.chenfeng.attributepotion.listener.hook.DragonCoreListener;
 import me.chenfeng.attributepotion.manager.constructor.PotionDataLoader;
 import me.chenfeng.attributepotion.utils.LoggerUtil;
 import org.bukkit.Bukkit;
+import org.bukkit.Material;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -37,6 +38,12 @@ public class ConfigManager {
     @Getter
     private static boolean fixedGroupCooldown = true;
     @Getter
+    private static boolean anvilProtect = true;
+    @Getter
+    private static boolean runEndOnOfflineExpire = true;
+    @Getter
+    private static int autoSaveInterval = 300;
+    @Getter
     private static boolean contain = true;
     @Getter
     private static String split = "<->";
@@ -52,14 +59,17 @@ public class ConfigManager {
 
     private static Map<String, String> keySlot = Collections.emptyMap();
 
-    @Getter
-    private static List<String> consumableTypes = Collections.emptyList();
+    private static Set<String> consumableTypes = Collections.emptySet();
 
     private static Map<String, Double> groupCooldownMap = Collections.emptyMap();
 
     private static Map<String, String> messages = Collections.emptyMap();
-    private static final Map<String, Long> messageCooldownMap = new HashMap<>();
-    private static final Map<String, PotionConfig> potionConfigMap = new LinkedHashMap<>();
+    private static final Map<UUID, Map<String, Long>> messageCooldownMap = new HashMap<>();
+    /**
+     * 对外读取的药水表。重载时先在 loadingPotions 里建好再整体替换，异步读取方不会看到半张表。
+     */
+    private static volatile Map<String, PotionConfig> potionConfigMap = Collections.emptyMap();
+    private static Map<String, PotionConfig> loadingPotions = new LinkedHashMap<>();
 
     @Getter
     private static YamlConfiguration hudYaml;
@@ -116,9 +126,16 @@ public class ConfigManager {
         keySlot = readStringMap(config, "key-slots");
         
         // 加载消耗品类型列表
-        consumableTypes = Collections.unmodifiableList(new ArrayList<>(config.getStringList("consumable-types")));
+        Set<String> consumables = new HashSet<>();
+        for (String type : config.getStringList("consumable-types")) {
+            consumables.add(type.trim().toUpperCase(Locale.ROOT));
+        }
+        consumableTypes = consumables;
         
         fixedGroupCooldown = config.getBoolean("fixed-group-cooldown", true);
+        anvilProtect = config.getBoolean("anvil-protect", true);
+        runEndOnOfflineExpire = config.getBoolean("run-end-on-offline-expire", true);
+        autoSaveInterval = config.getInt("auto-save-interval", 300);
         groupCooldownMap = readDoubleMap(config, "group-cooldowns");
         messageCooldown = config.getLong("message-cooldown", 500);
         bossBarTitle = config.getString("bossbar.title", "%potion% 剩余 %remaining% 秒").replace("&", "§");
@@ -127,13 +144,9 @@ public class ConfigManager {
         bossBarUpdateInterval = Math.max(1, config.getInt("bossbar.update-interval", 20));
         messages = readStringMap(config, "messages");
 
-        // 清除旧的药水配置缓存
-        clearPotionCache();
-        potionConfigMap.clear();
+        loadingPotions = new LinkedHashMap<>();
 
-        int loaded = 0;
-        loaded += loadPotionFolder(new File(plugin.getDataFolder(), "potion"));
-
+        int loaded = loadPotionFolder(new File(plugin.getDataFolder(), "potion"));
         File legacyFolder = new File(plugin.getDataFolder(), "potions");
         if (legacyFolder.exists() && legacyFolder.isDirectory()) {
             loaded += loadPotionFolder(legacyFolder);
@@ -141,6 +154,26 @@ public class ConfigManager {
 
         if (loaded == 0) {
             LoggerUtil.warning("[AttributePotion] No potion yml files found. Check the potion folder.");
+        }
+
+        potionConfigMap = Collections.unmodifiableMap(loadingPotions);
+        clearPotionCache();
+        warnUnknownGroups();
+    }
+
+    /**
+     * fixed-group-cooldown 开启时，组冷却完全取自 group-cooldowns。药水写了组却没配冷却，组冷却就不会生效，这里提示出来。
+     */
+    private static void warnUnknownGroups() {
+        if (!fixedGroupCooldown) {
+            return;
+        }
+        for (PotionConfig potion : potionConfigMap.values()) {
+            String group = potion.getGroup();
+            if (group != null && !group.isEmpty() && !groupCooldownMap.containsKey(group)) {
+                LoggerUtil.warning("[AttributePotion] 药水 " + potion.getKey() + " 所属的组 " + group
+                        + " 没有写在 group-cooldowns 里，该组不会有组冷却");
+            }
         }
     }
 
@@ -195,10 +228,10 @@ public class ConfigManager {
      * @param data 要存储的药水数据对象
      */
     public static void putPotionConfig(String key, PotionConfig data) {
-        if (potionConfigMap.containsKey(key)) {
+        if (loadingPotions.containsKey(key)) {
             LoggerUtil.warning("[AttributePotion] Duplicate potion key '" + key + "' will be overwritten");
         }
-        potionConfigMap.put(key, data);
+        loadingPotions.put(key, data);
     }
 
     /**
@@ -237,7 +270,17 @@ public class ConfigManager {
      * @return 包含所有药水数据的不可变映射
      */
     public static Map<String, PotionConfig> getAllPotionData() {
-        return Collections.unmodifiableMap(potionConfigMap);
+        return potionConfigMap;
+    }
+
+    /**
+     * 判断材料是否配置为原版消耗后才生效（consumable-types）。
+     *
+     * @param material 材料
+     * @return 配置过返回 true
+     */
+    public static boolean isConsumableType(Material material) {
+        return consumableTypes.contains(material.name());
     }
 
 
@@ -318,19 +361,16 @@ public class ConfigManager {
             return;
         }
 
-        String cooldownKey = player.getUniqueId() + ":" + key;
         long currentTime = System.currentTimeMillis();
-        
+
         // 检查消息冷却时间
-        long lastTime = messageCooldownMap.getOrDefault(cooldownKey, 0L);
+        Map<String, Long> playerCooldowns = messageCooldownMap.computeIfAbsent(player.getUniqueId(), uuid -> new HashMap<>());
+        long lastTime = playerCooldowns.getOrDefault(key, 0L);
         if(currentTime - lastTime < messageCooldown) {
             return;
         }
 
-        string = string.replace("%player%", player.getName())
-                .replace("%player_name%", player.getName());
-
-        // 替换占位符
+        // 先替换调用方给的占位符：范围药水的 %player% 指使用者，不能被接收者自己的名字抢先替换
         if(replacements != null && !replacements.isEmpty()) {
             for (Map.Entry<String, String> entry : replacements.entrySet()) {
                 if(entry.getKey() != null && entry.getValue() != null) {
@@ -338,11 +378,22 @@ public class ConfigManager {
                 }
             }
         }
+        string = string.replace("%player%", player.getName())
+                .replace("%player_name%", player.getName());
 
         // 更新最后发送时间
-        messageCooldownMap.put(cooldownKey, currentTime);
-        
+        playerCooldowns.put(key, currentTime);
+
         // 发送消息
         player.sendMessage(string);
+    }
+
+    /**
+     * 清理玩家的消息冷却记录，在玩家退出时调用，否则记录会一直累积。
+     *
+     * @param uuid 玩家 UUID
+     */
+    public static void clearMessageCooldown(UUID uuid) {
+        messageCooldownMap.remove(uuid);
     }
 }

@@ -1,7 +1,7 @@
 package me.chenfeng.attributepotion.manager;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
+import com.google.gson.JsonParseException;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import me.chenfeng.attributepotion.AttributePotion;
@@ -16,6 +16,9 @@ import org.bukkit.entity.Player;
 import java.io.File;
 import java.sql.*;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class SqlManager {
     private static final Gson GSON = new Gson();
@@ -25,14 +28,35 @@ public class SqlManager {
     private boolean mysql;
     private String legacyTableName;
     private String profileTableName;
+    /**
+     * 所有数据库读写都排进这一条线程，保证同一玩家“退出存档”一定先于“再次登录读取”。
+     */
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "AttributePotion-Database");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public SqlManager(AttributePotion plugin) {
         this.plugin = plugin;
     }
 
+    /**
+     * 连接数据库。连接失败时只记录错误，插件继续运行但不读写数据：药水功能可用，玩家数据不落库。
+     */
     public void init() {
-        loadDataSource();
-        createTables();
+        try {
+            loadDataSource();
+            createTables();
+        } catch (RuntimeException | LinkageError e) {
+            LoggerUtil.severe("[AttributePotion] 数据库不可用，本次运行不会读取或保存玩家数据，请检查 mysql 配置: " + e);
+            close();
+            dataSource = null;
+        }
+    }
+
+    public boolean isAvailable() {
+        return dataSource != null && !dataSource.isClosed();
     }
 
     private void loadDataSource() {
@@ -99,10 +123,12 @@ public class SqlManager {
     private void createTables() {
         try (Connection connection = getConnection();
              Statement statement = connection.createStatement()) {
+            // 药水节点通常是中文，MySQL 库默认字符集是 latin1 时不显式指定就会存成问号
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS " + profileTableName + " ("
                     + "uuid VARCHAR(36) PRIMARY KEY, "
                     + "profile_json " + textType() + " NOT NULL, "
-                    + "updated_at BIGINT NOT NULL)");
+                    + "updated_at BIGINT NOT NULL)"
+                    + (mysql ? " DEFAULT CHARSET=utf8mb4" : ""));
 
             statement.executeUpdate("CREATE TABLE IF NOT EXISTS " + legacyTableName + " ("
                     + "uuid VARCHAR(36), "
@@ -120,28 +146,83 @@ public class SqlManager {
         }
     }
 
+    /**
+     * 异步读取玩家档案。
+     * <p>
+     * 读取返回后立刻合并冷却并放行药水使用；激活中的药水要等 load-delay 后再恢复，给属性插件留出初始化时间。
+     * 这段时间内它们放在 pendingPotions 里，玩家此时退出也会被正常存回去。
+     */
     public void loadProfileAsync(Player player) {
         UUID uuid = player.getUniqueId();
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            StoredProfile storedProfile = loadStoredProfile(uuid);
-            Bukkit.getScheduler().runTaskLater(plugin,
-                    () -> applyStoredProfile(player, storedProfile),
-                    Math.max(0, ConfigManager.getLoadDelay()));
+        if (!isAvailable()) {
+            PlayerProfile profile = PlayerManager.getProfile(uuid);
+            if (profile != null) {
+                profile.setDataLoaded(true);
+            }
+            return;
+        }
+
+        executor.execute(() -> {
+            StoredProfile storedProfile = null;
+            boolean success = true;
+            try {
+                storedProfile = loadStoredProfile(uuid);
+            } catch (Exception e) {
+                success = false;
+                LoggerUtil.warning("[AttributePotion] 读取玩家 " + uuid + " 的数据失败，本次在线期间不会覆盖其存档: " + e.getMessage());
+            }
+
+            StoredProfile loaded = storedProfile;
+            boolean loadSuccess = success;
+            runSync(() -> applyStoredProfile(player, loaded, loadSuccess));
         });
     }
 
     public void saveProfileAsync(UUID uuid, PlayerProfile profile) {
+        if (!isAvailable() || !profile.isSaveAllowed()) {
+            return;
+        }
         StoredProfile snapshot = toStoredProfile(profile);
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> saveStoredProfile(uuid, snapshot));
+        executor.execute(() -> saveStoredProfile(uuid, snapshot));
+    }
+
+    /**
+     * 异步保存所有在线玩家的档案，用于定时存档。
+     */
+    public void saveAllAsync() {
+        PlayerManager.getAllProfiles().forEach(this::saveProfileAsync);
     }
 
     public void saveProfileBlocking(UUID uuid, PlayerProfile profile) {
+        if (!isAvailable() || !profile.isSaveAllowed()) {
+            return;
+        }
         saveStoredProfile(uuid, toStoredProfile(profile));
+    }
+
+    /**
+     * 等待队列里的读写全部完成。关服时要先调用它，再做最后一次同步存档。
+     */
+    public void awaitPendingTasks() {
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(15, TimeUnit.SECONDS)) {
+                LoggerUtil.warning("[AttributePotion] 等待数据库队列超时，可能有数据未写入");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     public void close() {
         if (dataSource != null) {
             dataSource.close();
+        }
+    }
+
+    private void runSync(Runnable runnable) {
+        if (plugin.isEnabled()) {
+            Bukkit.getScheduler().runTask(plugin, runnable);
         }
     }
 
@@ -152,18 +233,21 @@ public class SqlManager {
         return dataSource.getConnection();
     }
 
-    private StoredProfile loadStoredProfile(UUID uuid) {
-        StoredProfile profile = loadNewProfile(uuid);
-        if (profile != null) {
-            return profile;
+    /**
+     * @return 玩家档案，没有任何记录时返回 null
+     * @throws SQLException 数据库读取失败
+     * @throws JsonParseException 档案 JSON 损坏
+     */
+    private StoredProfile loadStoredProfile(UUID uuid) throws SQLException {
+        try (Connection connection = getConnection()) {
+            StoredProfile profile = loadNewProfile(connection, uuid);
+            return profile != null ? profile : loadLegacyProfile(connection, uuid);
         }
-        return loadLegacyProfile(uuid);
     }
 
-    private StoredProfile loadNewProfile(UUID uuid) {
+    private StoredProfile loadNewProfile(Connection connection, UUID uuid) throws SQLException {
         String sql = "SELECT profile_json FROM " + profileTableName + " WHERE uuid = ?";
-        try (Connection connection = getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, uuid.toString());
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
@@ -171,23 +255,14 @@ public class SqlManager {
                 }
                 return normalizeStoredProfile(GSON.fromJson(resultSet.getString("profile_json"), StoredProfile.class));
             }
-        } catch (SQLException | JsonSyntaxException e) {
-            LoggerUtil.warning("[AttributePotion] Failed to load profile " + uuid + ": " + e.getMessage());
-            return null;
         }
     }
 
-    private StoredProfile loadLegacyProfile(UUID uuid) {
+    private StoredProfile loadLegacyProfile(Connection connection, UUID uuid) throws SQLException {
         StoredProfile profile = new StoredProfile();
         long now = System.currentTimeMillis();
-
-        try (Connection connection = getConnection()) {
-            loadLegacyActivePotions(connection, uuid, profile, now);
-            loadLegacyCooldowns(connection, uuid, profile, now);
-        } catch (SQLException e) {
-            LoggerUtil.warning("[AttributePotion] Failed to load legacy profile " + uuid + ": " + e.getMessage());
-        }
-
+        loadLegacyActivePotions(connection, uuid, profile, now);
+        loadLegacyCooldowns(connection, uuid, profile, now);
         return profile.isEmpty() ? null : profile;
     }
 
@@ -302,33 +377,62 @@ public class SqlManager {
         }
     }
 
-    private void applyStoredProfile(Player player, StoredProfile storedProfile) {
-        if (storedProfile == null || !player.isOnline()) {
+    private void applyStoredProfile(Player player, StoredProfile storedProfile, boolean success) {
+        UUID uuid = player.getUniqueId();
+        // 玩家已下线或已重新登录时，player 是旧对象，这份结果必须丢弃，新登录有自己的读取任务
+        PlayerProfile profile = PlayerManager.getProfile(uuid);
+        if (profile == null || Bukkit.getPlayer(uuid) != player) {
             return;
         }
 
-        PlayerProfile profile = PlayerManager.getOrCreateProfile(player);
-        long now = System.currentTimeMillis();
+        if (!success) {
+            profile.setDataLoaded(true);
+            return;
+        }
 
-        putUnexpired(profile.getPotionCooldowns(), storedProfile.potionCooldowns, now);
-        putUnexpired(profile.getGroupCooldowns(), storedProfile.groupCooldowns, now);
+        profile.setSaveAllowed(true);
+        boolean hasData = false;
+        if (storedProfile != null) {
+            long now = System.currentTimeMillis();
+            putUnexpired(profile.getPotionCooldowns(), storedProfile.potionCooldowns, now);
+            putUnexpired(profile.getGroupCooldowns(), storedProfile.groupCooldowns, now);
+            for (StoredPotion storedPotion : storedProfile.activePotions) {
+                if (storedPotion != null && storedPotion.key != null) {
+                    profile.getPendingPotions().add(new ActivePotion(
+                            storedPotion.key,
+                            player,
+                            storedPotion.useTime,
+                            storedPotion.endTime,
+                            storedPotion.attributes));
+                }
+            }
+            hasData = !storedProfile.isEmpty();
+        }
+        profile.setDataLoaded(true);
 
-        for (StoredPotion storedPotion : storedProfile.activePotions) {
-            if (storedPotion == null || storedPotion.key == null) {
-                continue;
-            }
-            if (storedPotion.endTime != Long.MAX_VALUE && storedPotion.endTime <= now) {
-                continue;
-            }
-            ActivePotion activePotion = new ActivePotion(
-                    storedPotion.key,
-                    player,
-                    storedPotion.useTime,
-                    storedPotion.endTime,
-                    storedPotion.attributes);
-            if (!profile.getActivePotions().containsKey(storedPotion.key)) {
+        boolean notify = hasData;
+        Bukkit.getScheduler().runTaskLater(plugin,
+                () -> restorePendingPotions(player, profile, notify),
+                Math.max(0, ConfigManager.getLoadDelay()));
+    }
+
+    private void restorePendingPotions(Player player, PlayerProfile profile, boolean notify) {
+        if (PlayerManager.getProfile(player) != profile || Bukkit.getPlayer(player.getUniqueId()) != player) {
+            return;
+        }
+
+        List<ActivePotion> pending = new ArrayList<>(profile.getPendingPotions());
+        profile.getPendingPotions().clear();
+        for (ActivePotion activePotion : pending) {
+            if (activePotion.isExpired()) {
+                PlayerManager.finishOfflineExpiredPotion(player, activePotion);
+            } else if (!profile.getActivePotions().containsKey(activePotion.getPotionKey())) {
                 PlayerManager.restoreActivePotion(player, profile, activePotion);
             }
+        }
+
+        if (notify) {
+            ConfigManager.sendMessage(player, "load-data", null);
         }
     }
 
@@ -336,22 +440,28 @@ public class SqlManager {
         StoredProfile storedProfile = new StoredProfile();
         long now = System.currentTimeMillis();
 
-        for (Map.Entry<String, ActivePotion> entry : profile.getActivePotions().entrySet()) {
-            ActivePotion activePotion = entry.getValue();
-            if (activePotion == null || activePotion.isExpired()) {
-                continue;
+        // 已到期但还没结算的药水也要存，下次登录时才能补上 end 动作
+        for (ActivePotion activePotion : profile.getActivePotions().values()) {
+            if (activePotion != null) {
+                storedProfile.activePotions.add(toStoredPotion(activePotion));
             }
-            StoredPotion storedPotion = new StoredPotion();
-            storedPotion.key = entry.getKey();
-            storedPotion.useTime = activePotion.getUseTime();
-            storedPotion.endTime = activePotion.getEndTime();
-            storedPotion.attributes = new ArrayList<>(activePotion.getAppliedAttributes());
-            storedProfile.activePotions.add(storedPotion);
+        }
+        for (ActivePotion activePotion : profile.getPendingPotions()) {
+            storedProfile.activePotions.add(toStoredPotion(activePotion));
         }
 
         putUnexpired(storedProfile.potionCooldowns, profile.getPotionCooldowns(), now);
         putUnexpired(storedProfile.groupCooldowns, profile.getGroupCooldowns(), now);
         return storedProfile;
+    }
+
+    private StoredPotion toStoredPotion(ActivePotion activePotion) {
+        StoredPotion storedPotion = new StoredPotion();
+        storedPotion.key = activePotion.getPotionKey();
+        storedPotion.useTime = activePotion.getUseTime();
+        storedPotion.endTime = activePotion.getEndTime();
+        storedPotion.attributes = new ArrayList<>(activePotion.getAppliedAttributes());
+        return storedPotion;
     }
 
     private void putUnexpired(Map<String, Long> target, Map<String, Long> source, long now) {

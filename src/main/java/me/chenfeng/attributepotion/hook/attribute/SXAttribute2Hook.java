@@ -1,7 +1,5 @@
 package me.chenfeng.attributepotion.hook.attribute;
 
-import github.saukiya.sxattribute.SXAttribute;
-import github.saukiya.sxattribute.api.SXAPI;
 import github.saukiya.sxattribute.data.attribute.SXAttributeData;
 import github.saukiya.sxattribute.data.condition.SXConditionType;
 import me.chenfeng.attributepotion.utils.LoggerUtil;

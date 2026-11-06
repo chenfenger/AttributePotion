@@ -1,87 +1,146 @@
-# 是否输出 debug 日志
+# 是否输出 debug 日志（包含匹配和使用药水的耗时）。排查问题时再打开
 debug: false
 
-# 进服数据加载延迟，单位 tick，20 tick = 1 秒
+# 进服后等待多久恢复激活中的药水，单位 tick，20 tick = 1 秒。范围 >= 0
+# 留出时间给属性插件完成玩家数据初始化。冷却不受影响，读到数据后立刻生效
 load-delay: 60
+
+# 定时保存在线玩家数据的间隔，单位秒。写 0 关闭定时保存，只在退出和关服时保存
+# 修改后需要重启才生效
+auto-save-interval: 300
+
+# 药水在玩家离线期间到期时，下次进服是否补执行 end 动作并发送 out-potion 消息
+# 如果 success 里授予了权限、end 里收回，建议保持 true，否则离线到期后权限收不回来
+run-end-on-offline-expire: true
 
 # 数据库设置
 mysql:
-  # 是否启用 MySQL 存储，false 则使用 SQLite 存储
+  # 是否启用 MySQL。false 时使用插件目录下的 SQLite 文件
+  # 数据库连接失败时插件继续运行，但本次运行不读取也不保存玩家数据，后台会输出错误
   enable: false
+  # MySQL 地址（仅 MySQL）
   host: localhost
+  # MySQL 端口（仅 MySQL）
   port: 3306
+  # MySQL 用户名（仅 MySQL）
   username: root
+  # MySQL 密码（仅 MySQL）
   password: root
+  # MySQL 下是数据库名，SQLite 下是文件名（不写 .db 会自动补上）
+  # 删掉这一项且插件目录下有旧版 database.db 时，会继续使用旧文件
   file_name: AttributePotion
+  # 旧版数据表名。新数据写入 <table_name>_profile 表，只能含字母、数字和下划线，其他字符会被替换成下划线
   table_name: data
-  # MySQL 5 使用: com.mysql.jdbc.Driver
-  # MySQL 8 使用: com.mysql.cj.jdbc.Driver
+  # MySQL 驱动类（仅 MySQL）。1.12.2 服务端自带 MySQL 5 驱动：com.mysql.jdbc.Driver
+  # 要用 MySQL 8 驱动 com.mysql.cj.jdbc.Driver 时，需要自己把驱动提供给服务端，本插件不内置驱动
   driver: 'com.mysql.jdbc.Driver'
+  # 连接串附加参数（仅 MySQL），必须以问号开头
   jdbc: '?useSSL=false&useUnicode=true&characterEncoding=utf8'
+  # 连接池设置（仅 MySQL，SQLite 固定 1 条连接）
+  pool:
+    # 最大连接数
+    maximum-pool-size: 10
+    # 最小空闲连接数
+    minimum-idle: 2
+    # 获取连接的超时时间，单位毫秒
+    connection-timeout: 30000
+    # 连接的最长存活时间，单位毫秒，应小于数据库的 wait_timeout
+    max-lifetime: 1800000
+    # 空闲连接的回收时间，单位毫秒。minimum-idle 小于 maximum-pool-size 时才生效
+    idle-timeout: 30000
 
-# 属性插件类型，可选: AP3/AP2/SX3/SX2
+# 属性插件类型，可选 AP3 / AP2 / SX3 / SX2，也可写全称 AttributePlus3、SXAttribute2 等
+# 对应插件未安装或大版本不一致时，attributes 不生效，后台会提示，其他效果不受影响
 attribute-plugin: 'AP3'
 
-# 匹配方式，可选: name/lore/nbt。推荐 nbt，其次 name，不推荐 lore
+# 识别药水的方式，可选 name（物品名）/ lore（任意一行 Lore）/ nbt（需要 NBTAPI）
+# 推荐 nbt。name 和 lore 可能被改名、改 Lore 的插件伪造，详见 Wiki
 match-mode: 'name'
 
-# 是否仅包含匹配内容即可，false则整个需要匹配(建议改为false提升匹配性能)
+# true：物品名、Lore 或 NBT 值只要包含药水的 match 内容就算匹配，多个都匹配时取 match 最长的
+# false：必须完全相等。性能更好，也更不容易被伪造，建议改为 false
 contain: true
 
-# NBT 键名
+# match-mode 为 name 时，是否禁止用铁砧把普通物品改名成药水
+# 只拦截原版铁砧，其他插件提供的改名功能拦不住；真正的药水在铁砧里修理、改名不受影响
+anvil-protect: true
+
+# match-mode 为 nbt 时读取的 NBT 键名
 nbt-key: 'apn'
-# 药水次数的nbt,有这个配置时消耗物品是扣除次数。所以注意使用不可叠加物品
-# 例如
-#nbt:
-#  apn_count: 10
+
+# 药水次数的 NBT 键名，需要 NBTAPI，写空字符串关闭
+# 物品带这个 NBT 时，使用药水只扣次数，不扣物品数量。次数为 0 后不能再使用，是否移除物品看 optional.break
+# 同一堆物品共享次数，所以请用不可叠加的物品
 nbt-count: 'apn_count'
 
-# 分隔符
+# 配置里多段内容之间的分隔符（用于 conditions、effects、regen、[title]、[bossbar]）
 split: '<->'
 
-# 设置龙核/萌芽/云拾按键及对应槽位
+# 按键和槽位的对应关系：按键: 槽位名。需要龙核、萌芽、云拾或 ArcartX
+# 新增按键需要重启才会注册到客户端，只改槽位名可以用 /apn reload
 key-slots:
   Z: '额外槽位1'
   X: '额外槽位2'
   C: '额外槽位3'
 
-# 设置哪些物品消耗后才执行药水效果，例如原版食物/药水
+# 哪些材料走原版消耗流程：右键时先按原版吃或喝，吃完才生效。填 Bukkit Material 名称，不分大小写
+# 其他材料右键立即生效。作为药水的食物类材料应写在这里，否则右键时不会有吃的动作
 consumable-types:
   - 'APPLE'
 
-# 是否启用药水组固定冷却时间：
-# true 取下方组冷却时间；false 取药水自身冷却时间
-# 例如 A 药水冷却 5 秒，B 药水冷却 20 秒，同属于初级药水组：
-# - true: 使用 A 后，初级药水组进入 10 秒冷却
-# - false: 使用 A 后，初级药水组进入 5 秒冷却(A的冷却时间)
+# 药水组冷却的计算方式
+# true：取下方 group-cooldowns 里该组的时间
+# false：取本次使用的药水自身的 cooldown
+# 例如 A 冷却 5 秒、B 冷却 20 秒，同属初级药水组（组冷却 10 秒），使用 A 后：
+# true 时该组冷却 10 秒，false 时该组冷却 5 秒
 fixed-group-cooldown: true
 
-# 药水剩余时间 BossBar 显示
+# 药水剩余时间 BossBar，药水要开启 optional.bossbar 才显示，永久药水不显示
 bossbar:
+  # 标题，可用 %potion%（药水节点）、%id%（同前）、%remaining%（剩余秒数）、%time%（总秒数）、%percent%（剩余百分比）
   title: '&b%potion% &f剩余 &a%remaining%秒'
+  # 颜色，Bukkit BarColor：PINK / BLUE / RED / GREEN / YELLOW / PURPLE / WHITE，写错时用 BLUE
   color: BLUE
+  # 样式，Bukkit BarStyle：SOLID / SEGMENTED_6 / SEGMENTED_10 / SEGMENTED_12 / SEGMENTED_20，写错时用 SOLID
   style: SEGMENTED_10
+  # 刷新间隔，单位 tick，最小 1
   update-interval: 20
 
-# 药水组设置：每个药水有单独冷却，同组药水共享组冷却,单位秒
+# 药水组的冷却时间，单位秒。fixed-group-cooldown 为 true 时使用
+# 组名不要和药水节点同名，否则 %apn_remain_xxx% 占位符会优先按组解析
 group-cooldowns:
   初级药水组: 10
   中级药水组: 30
   高级药水组: 60
 
-# 消息发送冷却间隔,防止刷屏,单位毫秒
+# 同一条消息对同一玩家的最短发送间隔，防止刷屏，单位毫秒
 message-cooldown: 500
-# 消息设置，留空则不发送
+
+# 消息设置，留空则不发送。& 会转换成颜色符号。%player% 默认是接收消息的玩家
 messages:
+  # 执行 /apn reload 后发给执行者
   reload: "&b[属性药水]&a插件配置重载成功!"
+  # 药水要求潜行但玩家没有潜行
   shift: '&b[属性药水]&a请按住shift再使用药水!'
+  # 执行 /apn addTime 后发给执行者。可用 %player%（目标玩家）、%potion%、%time%
   add-time: '&b[属性药水]&a已为玩家&6 %player% &a增加 %potion% 属性时长 %time% 秒'
+  # 使用成功。可用 %potion%、%id%、%time%
   use-potion: "&b[属性药水]&a成功为玩家&6 %player% &a添加 %potion% &a效果，持续&e %time% &a秒"
+  # 不满足 conditions，在该条件自己的失败消息之后发送。可用 %id%、%potion%
   use-deny: "&b[属性药水]&c您不满足 %id% &c药水的使用条件!"
+  # optional.cover 为 false 且效果还在。可用 %id%、%potion%
   cover-deny: "&b[属性药水]&c已存在 %id% &c药水效果,请效果消失后再使用!"
+  # 药水自然到期。可用 %id%、%potion%
   out-potion: "&b[属性药水]%potion% &5效果已结束!"
+  # 药水自身冷却中。可用 %potion%、%id%、%cooldown%
   on-potion-cooldown: "&b[属性药水]&b%potion% &7冷却中，剩余&e %cooldown% &7秒!"
+  # 药水组冷却中。可用 %group%、%potion%、%id%、%cooldown%
   on-group-cooldown: "&b[属性药水]&b%group% &7冷却中，剩余&e %cooldown% &7秒!"
+  # 范围药水波及到其他玩家时发给使用者。可用 %range%、%playerList%、%potion%、%id%
   near-potion: '&b[属性药水]&7成功为&e %range% &7格范围内的玩家：&6%playerList% &7使用了&b %potion%'
+  # 被范围药水波及时发给被波及者。这里的 %player% 是药水的使用者。可用 %potion%、%id%
   other-potion: '&b[属性药水]&7您享受到来自&6 %player% &7的&b %potion% &7属性效果!'
+  # 进服后恢复了药水或冷却数据时发送，没有数据时不发
   load-data: '&b[属性药水]&a数据加载完成'
+  # 刚进服、数据还没读取完时尝试使用药水
+  data-loading: '&b[属性药水]&c数据加载中，请稍后再试'

@@ -28,7 +28,7 @@ public final class ExpressionUtil {
             return false;
         }
 
-        String expr = expression.trim();
+        String expr = stripOuterParentheses(expression.trim());
         if (expr.isEmpty()) {
             return false;
         }
@@ -60,6 +60,37 @@ public final class ExpressionUtil {
         }
 
         return eval(expr) != 0;
+    }
+
+    /**
+     * 去掉包住整个表达式的括号，这样 (a>1)&&(b>2) 拆开后的每一段都能继续解析比较符。
+     */
+    private static String stripOuterParentheses(String expr) {
+        String current = expr;
+        while (current.length() >= 2 && current.charAt(0) == '(' && closingParenthesis(current) == current.length() - 1) {
+            current = current.substring(1, current.length() - 1).trim();
+        }
+        return current;
+    }
+
+    private static int closingParenthesis(String expr) {
+        char quote = 0;
+        int depth = 0;
+        for (int i = 0; i < expr.length(); i++) {
+            char c = expr.charAt(i);
+            if (quote != 0) {
+                if (c == quote && expr.charAt(i - 1) != '\\') {
+                    quote = 0;
+                }
+            } else if (c == '"' || c == '\'') {
+                quote = c;
+            } else if (c == '(') {
+                depth++;
+            } else if (c == ')' && --depth == 0) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static boolean compare(String left, String right, String operator) {

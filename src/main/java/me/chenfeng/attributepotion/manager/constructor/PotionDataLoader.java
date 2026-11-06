@@ -31,9 +31,12 @@ public final class PotionDataLoader {
             ConfigurationSection sec = yaml.getConfigurationSection(potionKey);
             if (sec == null) continue;
             
-            // 解析单个药水配置并存储到配置管理器
-            PotionConfig potionConfig = parsePotion(potionKey, sec, file.getName());
-            ConfigManager.putPotionConfig(potionKey, potionConfig);
+            // 单个药水写错只跳过它自己，不影响其他药水和插件启动
+            try {
+                ConfigManager.putPotionConfig(potionKey, parsePotion(potionKey, sec, file.getName()));
+            } catch (RuntimeException e) {
+                LoggerUtil.warning("Failed to load potion '" + potionKey + "' in " + file.getName() + ", skipped: " + e);
+            }
         }
     }
 
@@ -59,11 +62,7 @@ public final class PotionDataLoader {
         Set<TriggerType> triggers = parseTriggers(sec.getStringList("triggers"), key, sourceName);
         List<String> conditions = new ArrayList<>();
         List<String> list = sec.getStringList("conditions");
-        list.forEach(s -> conditions.add(s
-                .replace("{split}", ConfigManager.getSplit())
-                .replace("{id}", key)
-                .replace("&", "§")
-        ));
+        list.forEach(s -> conditions.add(parseCondition(s, key)));
 
         // 读取属性和效果配置
         Map<String, String> attributes = readStringMap(sec.getConfigurationSection("attributes"));
@@ -91,6 +90,19 @@ public final class PotionDataLoader {
                 distance,
                 optional
         );
+    }
+
+    /**
+     * 解析一条使用条件。颜色符号只替换失败消息部分，表达式里的 && 不能被替换。
+     */
+    private static String parseCondition(String raw, String key) {
+        String split = ConfigManager.getSplit();
+        String condition = raw.replace("{split}", split).replace("{id}", key);
+        int index = condition.indexOf(split);
+        if (index < 0) {
+            return condition;
+        }
+        return condition.substring(0, index) + split + condition.substring(index + split.length()).replace("&", "§");
     }
 
     /**
@@ -162,7 +174,8 @@ public final class PotionDataLoader {
      * @return 不可变的TriggerType集合
      */
     private static Set<TriggerType> parseTriggers(List<String> raw, String potionKey, String sourceName) {
-        if (raw == null || raw.isEmpty()) return Collections.emptySet();
+        // 没写 triggers 表示不限制；写了但全部无效时保持空集合，不能退化成允许所有触发方式
+        if (raw == null || raw.isEmpty()) return Collections.unmodifiableSet(EnumSet.of(TriggerType.ALL));
 
         EnumSet<TriggerType> set = EnumSet.noneOf(TriggerType.class);
         for (String s : raw) {
@@ -172,7 +185,7 @@ public final class PotionDataLoader {
                 continue;
             }
             if (t == TriggerType.ALL) {
-                return EnumSet.allOf(TriggerType.class);
+                return Collections.unmodifiableSet(EnumSet.allOf(TriggerType.class));
             }
             set.add(t);
         }
@@ -245,6 +258,12 @@ public final class PotionDataLoader {
                 int level = Integer.parseInt(parts[0].trim());
                 double durationSeconds = Double.parseDouble(parts[1].trim());
                 
+                // 永久药水写 {time} 时这里是 -1，表示效果一直持续到药水被移除
+                if (time < 0 && durationSeconds < 0 && level > 0) {
+                    effects.add(new PotionEffect(type, Integer.MAX_VALUE, level - 1));
+                    continue;
+                }
+
                 if (level <= 0 || durationSeconds < 0) {
                     LoggerUtil.warning("Invalid values for effect '" + k + "' in " + sourceName + " potion '" + potionKey + "': level=" + level + ", duration=" + durationSeconds);
                     continue;
@@ -284,7 +303,6 @@ public final class PotionDataLoader {
         if (sec == null) return map;
         
         String string = String.valueOf(time);
-        double maxSeconds = time > 0 ? time : Double.MAX_VALUE;
         boolean isRegen = enumClass == RegenType.class;
         
         for (String k : sec.getKeys(false)) {
@@ -296,23 +314,53 @@ public final class PotionDataLoader {
             
             String value = sec.getString(k, "").replace("{time}", string);
             
-            if (isRegen && value.contains(ConfigManager.getSplit())) {
-                String[] parts = value.split(java.util.regex.Pattern.quote(ConfigManager.getSplit()), 3);
-                if (parts.length == 3) {
-                    try {
-                        double durationSeconds = Double.parseDouble(parts[1]);
-                        if (durationSeconds > maxSeconds) {
-                            LoggerUtil.warning("Regen duration exceeds potion time for '" + k + "' in " + sourceName + " potion '" + potionKey + "': " + durationSeconds + "s > " + maxSeconds + "s, clamped");
-                            value = parts[0] + ConfigManager.getSplit() + maxSeconds + ConfigManager.getSplit() + parts[2];
-                        }
-                    } catch (NumberFormatException ignored) {
-                    }
+            if (isRegen) {
+                value = normalizeRegen(value, time, k, potionKey, sourceName);
+                if (value == null) {
+                    continue;
                 }
             }
-            
+
             map.put(e, value);
         }
         return map;
+    }
+
+    /**
+     * 校验恢复配置并限制持续时间：不能超过药水时长；time 为 0 的药水只恢复一次；
+     * 永久药水的负数时长表示持续到药水被移除。
+     *
+     * @return 处理后的配置，格式错误时返回 null
+     */
+    private static String normalizeRegen(String value, double time, String k, String potionKey, String sourceName) {
+        String split = ConfigManager.getSplit();
+        String[] parts = value.split(java.util.regex.Pattern.quote(split), 3);
+        double duration;
+        try {
+            if (parts.length != 3) {
+                throw new NumberFormatException("expected 3 parts");
+            }
+            Double.parseDouble(parts[0].trim());
+            duration = Double.parseDouble(parts[1].trim());
+            Integer.parseInt(parts[2].trim());
+        } catch (NumberFormatException e) {
+            LoggerUtil.warning("Invalid regen '" + value + "' for '" + k + "' in " + sourceName + " potion '" + potionKey
+                    + "', expected 'amount" + split + "seconds" + split + "mode', skipped");
+            return null;
+        }
+
+        double clamped = duration;
+        if (time == 0) {
+            clamped = 0;
+        } else if (time > 0) {
+            clamped = duration < 0 ? time : Math.min(duration, time);
+        }
+
+        if (clamped != duration && duration > 0) {
+            LoggerUtil.warning("Regen duration exceeds potion time for '" + k + "' in " + sourceName + " potion '" + potionKey
+                    + "': " + duration + "s > " + time + "s, clamped");
+        }
+        return parts[0] + split + clamped + split + parts[2];
     }
 
     /**
@@ -337,32 +385,6 @@ public final class PotionDataLoader {
                 continue;
             }
             map.put(e, sec.getBoolean(k, false));
-        }
-        return map;
-    }
-
-    /**
-     * 读取枚举到字符串列表的映射配置。
-     * <p>
-     * 自动将配置键名转换为大写以匹配枚举常量。如果遇到未知的枚举值，会记录警告并跳过。
-     * 
-     * @param sec 配置节对象
-     * @param enumClass 枚举类型的Class对象
-     * @param potionKey 药水键名，用于错误日志
-     * @param sourceName 源文件名，用于错误日志
-     * @param <E> 枚举类型参数
-     * @return 枚举到字符串列表的EnumMap
-     */
-    private static <E extends Enum<E>> EnumMap<E, List<String>> readEnumListMap(ConfigurationSection sec, Class<E> enumClass, String potionKey, String sourceName) {
-        EnumMap<E, List<String>> map = new EnumMap<>(enumClass);
-        if (sec == null) return map;
-        for (String k : sec.getKeys(false)) {
-            E e = parseEnum(enumClass, k);
-            if (e == null) {
-                LoggerUtil.warning("Unknown key '" + k + "' in " + sourceName + " potion '" + potionKey + "' section '" + sec.getName() + "'");
-                continue;
-            }
-            map.put(e, sec.getStringList(k));
         }
         return map;
     }

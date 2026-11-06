@@ -24,8 +24,16 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class CommandHandler implements CommandExecutor, TabCompleter {
+    /**
+     * [bossbar] 动作创建的 BossBar。下线和插件关闭时要主动移除，否则永久显示的 BossBar 会一直持有玩家对象。
+     */
+    private static final Map<UUID, Set<BossBar>> ACTION_BOSS_BARS = new ConcurrentHashMap<>();
+
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, String[] args) {
         if (args.length == 0) {
@@ -84,11 +92,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
 
             boolean added = PotionHandler.addPotionTime(player, potionKey, time);
             if (added) {
-                Map<String, String> replacements = new java.util.HashMap<>();
-                replacements.put("%player%", player.getName());
-                replacements.put("%potion%", potionKey);
-                replacements.put("%time%", String.valueOf(time));
-                sender.sendMessage(ConfigManager.getMessage("addTime", "§b[属性药水]§a已给 %player% 的 %potion% 延长 %time% 秒")
+                sender.sendMessage(ConfigManager.getMessage("add-time", "§b[属性药水]§a已给 %player% 的 %potion% 延长 %time% 秒")
                         .replace("%player%", player.getName())
                         .replace("%potion%", potionKey)
                         .replace("%time%", String.valueOf(time)));
@@ -99,7 +103,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
         }
 
         sendHelp(sender);
-        return false;
+        return true;
     }
 
     @Nullable
@@ -158,19 +162,14 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
     }
 
     /**
-     * 执行命令列表。
+     * 执行动作列表。
      * <p>
-     * 遍历命令列表，根据命令前缀解析并执行不同类型的命令：
-     * - [msg]: 发送聊天消息
-     * - [console]: 以控制台身份执行命令
-     * - [op]: 临时提升 OP 执行命令
-     * - [title]: 显示标题（大标题<->小标题<->淡入<->持续<->淡出）
-     * - [actionbar]: 显示 ActionBar
-     * - [bossbar]: 显示 BossBar（标题<->颜色<->样式<->持续时间）
+     * 单条动作抛出异常只记录日志并继续：动作运行在“已生效、未扣物品”的阶段，
+     * 异常如果向外传播，玩家会拿到效果却不消耗物品。
      *
-     * @param player 执行命令的玩家
-     * @param commands 要执行的命令列表
-     * @param potionDuration 药水持续时间（秒），用于定时命令
+     * @param player 执行动作的玩家
+     * @param commands 动作列表
+     * @param potionDuration 药水持续时间（秒）
      */
     public static void executeCommands(Player player, List<String> commands, double potionDuration) {
         if (commands == null || commands.isEmpty()) {
@@ -182,35 +181,44 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
                 continue;
             }
 
-            executeSingleCommand(player, command, potionDuration);
+            try {
+                executeSingleCommand(player, command, potionDuration);
+            } catch (RuntimeException e) {
+                LoggerUtil.warning("[AttributePotion] 动作执行失败: " + command + "（" + e + "）");
+            }
         }
     }
 
     /**
-     * 执行单个命令，根据前缀解析命令类型。
-     *
-     * @param player 玩家对象
-     * @param command 原始命令字符串
-     * @param potionDuration 药水持续时间
+     * 执行单条动作。前缀要在替换占位符之前判断，占位符的值不能决定动作以什么身份执行。
      */
     private static void executeSingleCommand(Player player, String command, double potionDuration) {
-        String replacedCommand = PAPIHook.replacePlaceholders(player, command);
-
-        if (replacedCommand.startsWith("[msg]")) {
-            executeMsgCommand(player, replacedCommand.substring(5));
-        } else if (replacedCommand.startsWith("[console]")) {
-            executeConsoleCommand(replacedCommand.substring(9));
-        } else if (replacedCommand.startsWith("[op]")) {
-            executeOpCommand(player, replacedCommand.substring(4));
-        } else if (replacedCommand.startsWith("[title]")) {
-            executeTitleCommand(player, replacedCommand.substring(7));
-        } else if (replacedCommand.startsWith("[actionbar]")) {
-            executeActionbarCommand(player, replacedCommand.substring(11));
-        } else if (replacedCommand.startsWith("[bossbar]")) {
-            executeBossbarCommand(player, replacedCommand.substring(9), potionDuration);
+        if (command.startsWith("[msg]")) {
+            executeMsgCommand(player, PAPIHook.replacePlaceholders(player, command.substring(5)));
+        } else if (command.startsWith("[console]")) {
+            executeConsoleCommand(cleanCommand(PAPIHook.replacePlaceholders(player, command.substring(9))));
+        } else if (command.startsWith("[op]")) {
+            executeOpCommand(player, cleanCommand(PAPIHook.replacePlaceholders(player, command.substring(4))));
+        } else if (command.startsWith("[title]")) {
+            executeTitleCommand(player, PAPIHook.replacePlaceholders(player, command.substring(7)));
+        } else if (command.startsWith("[actionbar]")) {
+            executeActionbarCommand(player, PAPIHook.replacePlaceholders(player, command.substring(11)));
+        } else if (command.startsWith("[bossbar]")) {
+            executeBossbarCommand(player, PAPIHook.replacePlaceholders(player, command.substring(9)), potionDuration);
         } else {
-            Bukkit.dispatchCommand(player, replacedCommand);
+            String playerCommand = cleanCommand(PAPIHook.replacePlaceholders(player, command));
+            if (!playerCommand.isEmpty()) {
+                Bukkit.dispatchCommand(player, playerCommand);
+            }
         }
+    }
+
+    /**
+     * 去掉命令首尾空格和开头的斜杠，dispatchCommand 不接受这些写法。
+     */
+    private static String cleanCommand(String command) {
+        String cleaned = command.trim();
+        return cleaned.startsWith("/") ? cleaned.substring(1) : cleaned;
     }
 
     /**
@@ -271,6 +279,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
 
         String[] parts = params.split(java.util.regex.Pattern.quote(ConfigManager.getSplit()), 5);
         if (parts.length < 5) {
+            LoggerUtil.warning("[AttributePotion] Title 动作需要 5 段参数: " + params);
             return;
         }
 
@@ -320,6 +329,7 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
 
         String[] parts = params.split(java.util.regex.Pattern.quote(ConfigManager.getSplit()), 4);
         if (parts.length < 4) {
+            LoggerUtil.warning("[AttributePotion] BossBar 动作需要 4 段参数: " + params);
             return;
         }
 
@@ -333,18 +343,40 @@ public class CommandHandler implements CommandExecutor, TabCompleter {
             bossBar.addPlayer(player);
 
             bossBar.setVisible(true);
+            UUID uuid = player.getUniqueId();
+            Set<BossBar> bars = ACTION_BOSS_BARS.computeIfAbsent(uuid, key -> ConcurrentHashMap.newKeySet());
+            bars.add(bossBar);
             if (duration > 0) {
-
                 new BukkitRunnable() {
                     @Override
                     public void run() {
                         bossBar.removeAll();
+                        bars.remove(bossBar);
                     }
                 }.runTaskLater(AttributePotion.getInstance(), (long) (duration * 20));
             }
         } catch (NumberFormatException e) {
             LoggerUtil.warning("[AttributePotion] BossBar 命令参数格式错误: " + params);
         }
+    }
+
+    /**
+     * 移除玩家所有 [bossbar] 动作创建的 BossBar。
+     *
+     * @param uuid 玩家 UUID
+     */
+    public static void clearActionBossBars(UUID uuid) {
+        Set<BossBar> bars = ACTION_BOSS_BARS.remove(uuid);
+        if (bars != null) {
+            bars.forEach(BossBar::removeAll);
+        }
+    }
+
+    /**
+     * 移除所有玩家的 [bossbar] BossBar，用于插件关闭。
+     */
+    public static void clearAllActionBossBars() {
+        new ArrayList<>(ACTION_BOSS_BARS.keySet()).forEach(CommandHandler::clearActionBossBars);
     }
 
     /**

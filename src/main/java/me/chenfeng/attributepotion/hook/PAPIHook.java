@@ -10,7 +10,6 @@ import me.chenfeng.attributepotion.manager.PlayerManager;
 import me.chenfeng.attributepotion.manager.constructor.OptionKey;
 import me.chenfeng.attributepotion.manager.constructor.RegenConfig;
 import me.chenfeng.attributepotion.manager.constructor.RegenType;
-import me.chenfeng.attributepotion.utils.ExpressionUtil;
 import me.clip.placeholderapi.PlaceholderAPI;
 import me.clip.placeholderapi.expansion.PlaceholderExpansion;
 import org.bukkit.entity.Player;
@@ -18,7 +17,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -44,6 +42,21 @@ public class PAPIHook extends PlaceholderExpansion {
     public PAPIHook() {
         instance = this;
         this.register();
+    }
+
+    /**
+     * 注销占位符扩展，插件关闭时调用。否则热重载后 PlaceholderAPI 还持有旧插件的类。
+     */
+    public static void unregisterExpansion() {
+        PAPIHook hook = instance;
+        instance = null;
+        if (hook != null) {
+            try {
+                hook.unregister();
+            } catch (RuntimeException | LinkageError ignored) {
+                // PlaceholderAPI 已先于本插件关闭时无需处理
+            }
+        }
     }
 
     @NotNull
@@ -177,17 +190,21 @@ public class PAPIHook extends PlaceholderExpansion {
             case "consume":
                 return optionValue(config, OptionKey.CONSUME, true);
             case "cover":
-                return optionValue(config, OptionKey.COVER, false);
+                return optionValue(config, OptionKey.COVER, true);
             case "shift":
                 return optionValue(config, OptionKey.SHIFT, false);
             case "cool":
-                return optionValue(config, OptionKey.COOL, true);
+                return optionValue(config, OptionKey.COOL, false);
             case "death":
                 return optionValue(config, OptionKey.DEATH, false);
             case "quit":
                 return optionValue(config, OptionKey.QUIT, false);
             case "range":
                 return optionValue(config, OptionKey.RANGE, false);
+            case "bossbar":
+                return optionValue(config, OptionKey.BOSSBAR, false);
+            case "break":
+                return optionValue(config, OptionKey.BREAK, false);
             case "stats":
                 return String.valueOf(activePotion != null);
             case "remain":
@@ -244,55 +261,13 @@ public class PAPIHook extends PlaceholderExpansion {
      *
      * @param player 玩家
      * @param placeholder 包含占位符的字符串
-     * @return 替换后的字符串；PlaceholderAPI 未注册时返回原始字符串
+     * @return 替换后的字符串；PlaceholderAPI 未安装时只替换玩家名，保证默认配置里的 %player_name% 可用
      */
     public static String replacePlaceholders(@NonNull Player player, @NotNull String placeholder) {
         if (instance == null) {
-            return placeholder;
+            return placeholder.replace("%player_name%", player.getName()).replace("%player%", player.getName());
         }
         return PlaceholderAPI.setPlaceholders(player, placeholder);
-    }
-
-    /**
-     * 批量替换字符串列表中的 PlaceholderAPI 占位符。
-     *
-     * @param player 玩家
-     * @param list 包含占位符的字符串列表
-     * @return 替换后的字符串列表；PlaceholderAPI 未注册时返回原始列表
-     */
-    public static List<String> replacePlaceholders(@NonNull Player player, @NotNull List<String> list) {
-        if (instance == null) {
-            return list;
-        }
-
-        if (list.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        return PlaceholderAPI.setPlaceholders(player, list);
-    }
-
-    /**
-     * 替换占位符后计算数学表达式。
-     *
-     * @param player 玩家
-     * @param expression 数学表达式
-     * @return 计算结果
-     */
-    public static double evaluateExpression(@NonNull Player player, @NotNull String expression) {
-        String replaced = replacePlaceholders(player, expression);
-        return ExpressionUtil.eval(replaced);
-    }
-
-    /**
-     * 替换占位符后计算数学表达式并返回字符串。
-     *
-     * @param player 玩家
-     * @param expression 数学表达式
-     * @return 计算结果字符串
-     */
-    public static String evaluateExpressionToString(@NonNull Player player, @NotNull String expression) {
-        return String.valueOf(evaluateExpression(player, expression));
     }
 
     /**
