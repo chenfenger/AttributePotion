@@ -15,16 +15,21 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 玩家数据管理器，负责管理所有在线玩家的 PlayerProfile。
+ * 玩家数据管理器，负责管理所有在线玩家的 PlayerProfile，并定期清理过期药水。
  * <p>
- * 提供玩家数据的创建、获取、移除等操作
- * 同时负责定期检查并清理过期的药水效果。
+ * 移除药水分两种语义，不要混用：
+ * <ul>
+ *   <li>{@link #removeActivePotion}：药水真正结束，会执行 end 动作并触发 {@link PotionRemoveEvent}。</li>
+ *   <li>{@link #unloadProfile}：玩家下线或插件关闭，数据已存库、之后还会恢复，只撤销运行时状态，不执行 end 动作。</li>
+ * </ul>
  */
 public class PlayerManager {
     private static final Map<UUID, PlayerProfile> playerProfileMap = new ConcurrentHashMap<>();
@@ -34,11 +39,8 @@ public class PlayerManager {
 
     /**
      * 启动药水过期检查任务。
-     * <p>
-     * 该方法应在插件 onEnable 阶段调用，启动一个周期性任务，
-     * 每隔一定时间检查所有在线玩家的激活药水是否过期，并自动清理。
-     * 
-     * @param checkIntervalTicks 检查间隔（游戏刻），建议 20 tick（1秒）
+     *
+     * @param checkIntervalTicks 检查间隔（游戏刻）
      */
     public static void startExpirationCheckTask(int checkIntervalTicks) {
         if (expirationCheckTask != null && !expirationCheckTask.isCancelled()) {
@@ -46,17 +48,15 @@ public class PlayerManager {
         }
 
         expirationCheckTask = Bukkit.getScheduler().runTaskTimer(
-            AttributePotion.getInstance(),
+                AttributePotion.getInstance(),
                 PlayerManager::checkAndRemoveExpiredPotions,
-            checkIntervalTicks,
-            checkIntervalTicks
+                checkIntervalTicks,
+                checkIntervalTicks
         );
     }
 
     /**
      * 停止药水过期检查任务。
-     * <p>
-     * 该方法应在插件 onDisable 阶段调用，确保资源正确释放。
      */
     public static void stopExpirationCheckTask() {
         if (expirationCheckTask != null && !expirationCheckTask.isCancelled()) {
@@ -65,106 +65,112 @@ public class PlayerManager {
         }
     }
 
-    /**
-     * 检查并移除所有玩家已过期的药水。
-     * <p>
-     * 遍历所有在线玩家的激活药水列表，对于已过期的药水：
-     * 1. 执行 END 阶段命令
-     * 2. 移除应用的属性
-     * 3. 取消 tick 任务
-     * 4. 从激活列表中移除
-     */
     private static void checkAndRemoveExpiredPotions() {
-        AbstractAttributeHook attributeHook = AttributePotion.getInstance().getAttributeHook();
-        
         for (Map.Entry<UUID, PlayerProfile> entry : playerProfileMap.entrySet()) {
-            PlayerProfile profile = entry.getValue();
-            UUID playerUuid = entry.getKey();
-            Player player = Bukkit.getPlayer(playerUuid);
-            
-            if (player == null || !player.isOnline()) {
-                continue;
-            }
-
-            Map<String, ActivePotion> activePotions = profile.getActivePotions();
-            List<String> expiredKeys = new ArrayList<>();
-
-            for (Map.Entry<String, ActivePotion> potionEntry : activePotions.entrySet()) {
-                String potionKey = potionEntry.getKey();
-                ActivePotion activePotion = potionEntry.getValue();
-
-                if (activePotion.isExpired()) {
-                    expiredKeys.add(potionKey);
-                }
-            }
-
-            for (String potionKey : expiredKeys) {
-                removeExpiredPotion(player, profile, potionKey, attributeHook);
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player != null) {
+                removeExpiredPotions(player, entry.getValue());
             }
         }
     }
 
     /**
-     * 移除单个过期药水并执行清理操作。
-     * 
-     * @param player 玩家对象
+     * 立即结算玩家所有已到期的药水，执行 end 动作并发送结束消息。
+     *
+     * @param player 玩家
      * @param profile 玩家档案
-     * @param potionKey 药水配置键名
-     * @param attributeHook 属性系统适配器
      */
-    private static void removeExpiredPotion(Player player, PlayerProfile profile, 
-                                           String potionKey, AbstractAttributeHook attributeHook) {
-        removeActivePotion(player, profile, potionKey, attributeHook);
+    public static void removeExpiredPotions(Player player, PlayerProfile profile) {
+        List<String> expiredKeys = new ArrayList<>();
+        for (Map.Entry<String, ActivePotion> entry : profile.getActivePotions().entrySet()) {
+            if (entry.getValue().isExpired()) {
+                expiredKeys.add(entry.getKey());
+            }
+        }
+
+        for (String potionKey : expiredKeys) {
+            ActivePotion removed = removePotion(player, profile, potionKey);
+            if (removed != null) {
+                sendEndMessage(player, potionKey);
+            }
+        }
     }
 
+    /**
+     * 结束一个激活中的药水：撤销属性和原版效果，执行 end 动作并触发移除事件。
+     *
+     * @param player 玩家
+     * @param profile 玩家档案
+     * @param potionKey 药水节点
+     */
     public static void removeActivePotion(Player player, PlayerProfile profile, String potionKey) {
-        removeActivePotion(player, profile, potionKey, AttributePotion.getInstance().getAttributeHook());
+        removePotion(player, profile, potionKey);
     }
 
-    private static void removeActivePotion(Player player, PlayerProfile profile,
-                                           String potionKey, AbstractAttributeHook attributeHook) {
+    private static ActivePotion removePotion(Player player, PlayerProfile profile, String potionKey) {
         ActivePotion activePotion = profile.removeActivePotion(potionKey);
-
         if (activePotion == null) {
+            return null;
+        }
+
+        activePotion.deactivate();
+        takeAttributes(player, activePotion);
+
+        PotionConfig config = ConfigManager.getPotionConfig(potionKey);
+        if (config != null) {
+            PotionHandler.removeVanillaEffects(player, config);
+            executeCommandPhase(player, config, CommandPhase.END);
+            PotionRemoveEvent.callEvent(player, config, activePotion);
+        }
+
+        LoggerUtil.debug("[AttributePotion] Player " + player.getName() + " potion " + potionKey + " removed");
+        return activePotion;
+    }
+
+    /**
+     * 结算玩家离线期间到期的药水。属性和原版效果在离线时已经不存在，只补发结束动作。
+     *
+     * @param player 玩家
+     * @param activePotion 离线期间到期的药水
+     */
+    public static void finishOfflineExpiredPotion(Player player, ActivePotion activePotion) {
+        PotionConfig config = ConfigManager.getPotionConfig(activePotion.getPotionKey());
+        if (config == null || !ConfigManager.isRunEndOnOfflineExpire()) {
             return;
         }
 
-        PotionConfig config = ConfigManager.getPotionConfig(potionKey);
+        sendEndMessage(player, activePotion.getPotionKey());
+        executeCommandPhase(player, config, CommandPhase.END);
+        PotionRemoveEvent.callEvent(player, config, activePotion);
+    }
+
+    private static void sendEndMessage(Player player, String potionKey) {
+        Map<String, String> replacements = new HashMap<>();
+        replacements.put("%id%", potionKey);
+        replacements.put("%potion%", potionKey);
+        ConfigManager.sendMessage(player, "out-potion", replacements);
+    }
+
+    private static void takeAttributes(Player player, ActivePotion activePotion) {
+        AbstractAttributeHook attributeHook = AttributePotion.getInstance().getAttributeHook();
+        if (attributeHook == null || player == null || activePotion.getAppliedAttributes().isEmpty()) {
+            return;
+        }
 
         try {
-            activePotion.deactivate();
-
-            if (attributeHook != null && !activePotion.getAppliedAttributes().isEmpty()) {
-                attributeHook.takeAttribute(player, potionKey);
-            }
-
-            if (config != null) {
-                executeCommandPhase(player, config, CommandPhase.END);
-                PotionRemoveEvent.callEvent(player, config, activePotion);
-            }
-
-            if (ConfigManager.isDebug()) {
-                LoggerUtil.debug("[AttributePotion] Player " + player.getName() + " potion " + potionKey + " removed");
-            }
-        } catch (Exception e) {
-            LoggerUtil.warning("[AttributePotion] Failed to remove potion " + potionKey + ": " + e.getMessage());
+            attributeHook.takeAttribute(player, activePotion.getPotionKey());
+        } catch (Exception | LinkageError e) {
+            LoggerUtil.warning("[AttributePotion] Failed to take attributes of potion "
+                    + activePotion.getPotionKey() + ": " + e);
         }
     }
 
-    /**
-     * 执行指定阶段的命令。
-     * 
-     * @param player 玩家对象
-     * @param config 药水配置
-     * @param phase 命令阶段
-     */
     private static void executeCommandPhase(Player player, PotionConfig config, CommandPhase phase) {
         CommandHandler.executeCommands(player, config.getCommands().get(phase), config.getTime());
     }
 
     public static PlayerProfile getOrCreateProfile(Player player) {
-        return playerProfileMap.computeIfAbsent(player.getUniqueId(),
-            uuid -> new PlayerProfile());
+        return playerProfileMap.computeIfAbsent(player.getUniqueId(), uuid -> new PlayerProfile());
     }
 
     public static PlayerProfile getProfile(UUID uuid) {
@@ -175,20 +181,9 @@ public class PlayerManager {
         return getProfile(player.getUniqueId());
     }
 
-    public static PlayerProfile removeProfile(UUID uuid) {
-        PlayerProfile profile = playerProfileMap.remove(uuid);
-        
-        if (profile != null) {
-            cleanupAllPotions(profile, uuid);
-        }
-        
-        return profile;
-    }
-
-    public static PlayerProfile removeProfile(Player player) {
-        return removeProfile(player.getUniqueId());
-    }
-
+    /**
+     * 恢复一个尚未到期的药水到玩家身上。
+     */
     public static void restoreActivePotion(Player player, PlayerProfile profile, ActivePotion activePotion) {
         if (activePotion == null || activePotion.isExpired()) {
             return;
@@ -197,56 +192,39 @@ public class PlayerManager {
         PotionHandler.restoreActivePotion(player, activePotion);
     }
 
+    /**
+     * 卸载玩家档案：取消定时任务并撤销属性，不执行 end 动作。
+     * <p>
+     * 调用前应先把档案存库，否则未结束的药水会丢失。
+     *
+     * @param uuid 玩家 UUID
+     * @return 被卸载的档案，不存在时返回 null
+     */
     public static PlayerProfile unloadProfile(UUID uuid) {
         PlayerProfile profile = playerProfileMap.remove(uuid);
-        if (profile != null) {
-            for (ActivePotion activePotion : profile.getActivePotions().values()) {
-                activePotion.deactivate();
-            }
-            profile.clearAllActivePotions();
+        if (profile == null) {
+            return null;
         }
+
+        Player player = Bukkit.getPlayer(uuid);
+        for (ActivePotion activePotion : profile.getActivePotions().values()) {
+            activePotion.deactivate();
+            takeAttributes(player, activePotion);
+        }
+        profile.clearAllActivePotions();
         return profile;
     }
 
     /**
-     * 清理玩家的所有激活药水（通常在玩家退出时调用）。
-     * 
-     * @param profile 玩家档案
-     * @param playerUuid 玩家 UUID
+     * 卸载所有在线玩家的档案，用于插件关闭。
      */
-    private static void cleanupAllPotions(PlayerProfile profile, UUID playerUuid) {
-        Player player = Bukkit.getPlayer(playerUuid);
-
-        for (String potionKey : new ArrayList<>(profile.getActivePotions().keySet())) {
-            if (player != null) {
-                removeActivePotion(player, profile, potionKey);
-            } else {
-                ActivePotion activePotion = profile.removeActivePotion(potionKey);
-                if (activePotion != null) {
-                    activePotion.deactivate();
-                }
-            }
+    public static void unloadAllProfiles() {
+        for (UUID uuid : new ArrayList<>(playerProfileMap.keySet())) {
+            unloadProfile(uuid);
         }
-
-        profile.clearAllActivePotions();
-    }
-
-    public static boolean hasProfile(UUID uuid) {
-        return playerProfileMap.containsKey(uuid);
     }
 
     public static Map<UUID, PlayerProfile> getAllProfiles() {
-        return new ConcurrentHashMap<>(playerProfileMap);
-    }
-
-    public static void clearAllProfiles() {
-        for (Map.Entry<UUID, PlayerProfile> entry : new ArrayList<>(playerProfileMap.entrySet())) {
-            cleanupAllPotions(entry.getValue(), entry.getKey());
-        }
-        playerProfileMap.clear();
-    }
-
-    public static int getProfileCount() {
-        return playerProfileMap.size();
+        return Collections.unmodifiableMap(new HashMap<>(playerProfileMap));
     }
 }

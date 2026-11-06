@@ -10,6 +10,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public class ArcartXListener {
     private static final String CATEGORY = "AttributePotion";
@@ -76,6 +77,17 @@ public class ArcartXListener {
                 keyCallBackClass.getClassLoader(),
                 new Class<?>[]{keyCallBackClass},
                 (proxy, method, args) -> {
+                    // 代理对象可能被放进集合，Object 的方法要正常返回
+                    if (method.getDeclaringClass() == Object.class) {
+                        switch (method.getName()) {
+                            case "hashCode":
+                                return System.identityHashCode(proxy);
+                            case "equals":
+                                return proxy == args[0];
+                            default:
+                                return "AttributePotionKeyCallback[" + normalized + "]";
+                        }
+                    }
                     if (args == null || args.length == 0 || !(args[0] instanceof Player)) {
                         return null;
                     }
@@ -107,14 +119,7 @@ public class ArcartXListener {
             return;
         }
 
-        ItemStack itemStack = getSlotItemStack(arcartXPlayer, slot);
-        KeySlotPotionHandler.handleKeyPress(
-                player,
-                key,
-                itemStack,
-                updatedItem -> setSlotItemStack(arcartXPlayer, slot, updatedItem),
-                null
-        );
+        KeySlotPotionHandler.onKeyPress(player, key, slotAccess(arcartXPlayer, slot), null);
     }
 
     private void handleKeyRelease(Player player, String key) {
@@ -125,14 +130,22 @@ public class ArcartXListener {
             return;
         }
 
-        ItemStack itemStack = getSlotItemStack(arcartXPlayer, slot);
-        KeySlotPotionHandler.useSlotPotionOnRelease(
-                player,
-                key,
-                itemStack,
-                updatedItem -> setSlotItemStack(arcartXPlayer, slot, updatedItem),
-                null
-        );
+        KeySlotPotionHandler.onKeyRelease(player, key, slotAccess(arcartXPlayer, slot), null);
+    }
+
+    private KeySlotPotionHandler.SlotAccess slotAccess(Object arcartXPlayer, String slot) {
+        return new KeySlotPotionHandler.SlotAccess() {
+            @Override
+            public CompletableFuture<ItemStack> read() {
+                return CompletableFuture.completedFuture(getSlotItemStack(arcartXPlayer, slot));
+            }
+
+            @Override
+            public CompletableFuture<?> write(ItemStack itemStack) {
+                setSlotItemStack(arcartXPlayer, slot, itemStack);
+                return CompletableFuture.completedFuture(null);
+            }
+        };
     }
 
     private Object getArcartXPlayer(Player player) {

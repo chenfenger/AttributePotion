@@ -92,19 +92,6 @@ public class ActivePotion {
     }
 
     /**
-     * 添加已应用的属性标识。
-     * <p>
-     * 用于在药水结束时追踪并移除这些属性。
-     * 
-     * @param attribute 属性标识字符串
-     */
-    public void addAppliedAttribute(@NonNull String attribute) {
-        if (isActive) {
-            appliedAttributes.add(attribute);
-        }
-    }
-
-    /**
      * 批量添加已应用的属性标识。
      * 
      * @param attributes 属性标识列表
@@ -112,20 +99,6 @@ public class ActivePotion {
     public void addAppliedAttributes(@NonNull List<String> attributes) {
         if (isActive) {
             appliedAttributes.addAll(attributes);
-        }
-    }
-
-    /**
-     * 注册 tick 周期任务 ID。
-     * <p>
-     * 用于在药水结束时取消所有相关的定时任务。
-     * 
-     * @param tickInterval tick 间隔（游戏刻）
-     * @param taskId Bukkit 调度任务 ID
-     */
-    public void registerTickTask(int tickInterval, int taskId) {
-        if (isActive) {
-            tickTaskIds.put(tickInterval, taskId);
         }
     }
 

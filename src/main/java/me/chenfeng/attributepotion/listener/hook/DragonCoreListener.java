@@ -14,8 +14,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public class DragonCoreListener implements Listener {
     private static final String PRESS_HUD_YAML_PATH = "Gui/AttributePotion/press-hud.yml";
@@ -30,7 +32,9 @@ public class DragonCoreListener implements Listener {
 
         @Override
         public void stop(Player player) {
-            sendPressStop(player);
+            if (Bukkit.getPlayer(player.getUniqueId()) == player) {
+                sendPressStop(player);
+            }
         }
     };
 
@@ -49,7 +53,12 @@ public class DragonCoreListener implements Listener {
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent event) {
         if(isDragonCoreLoaded) {
-            Bukkit.getScheduler().runTaskLater(plugin, () -> sendPressHud(event.getPlayer()), 20L);
+            Player player = event.getPlayer();
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (Bukkit.getPlayer(player.getUniqueId()) == player) {
+                    sendPressHud(player);
+                }
+            }, 20L);
         }
     }
 
@@ -75,17 +84,21 @@ public class DragonCoreListener implements Listener {
             return;
         }
 
-        FutureSlotAPI.getSlotItem(player, slot).thenAccept(itemStack ->
-                Bukkit.getScheduler().runTask(plugin, () -> KeySlotPotionHandler.handleKeyPress(
-                player,
-                key,
-                itemStack,
-                updatedItem -> FutureSlotAPI.setSlotItem(player, slot, updatedItem, true),
-                DISPLAY_REPORTER
-        )));
+        KeySlotPotionHandler.onKeyPress(player, key, slotAccess(player, slot), DISPLAY_REPORTER);
+    }
 
-        
+    private static KeySlotPotionHandler.SlotAccess slotAccess(Player player, String slot) {
+        return new KeySlotPotionHandler.SlotAccess() {
+            @Override
+            public CompletableFuture<ItemStack> read() {
+                return FutureSlotAPI.getSlotItem(player, slot);
+            }
 
+            @Override
+            public CompletableFuture<?> write(ItemStack itemStack) {
+                return FutureSlotAPI.setSlotItem(player, slot, itemStack, true);
+            }
+        };
     }
 
     private static void sendPressProgress(Player player, String key, PotionConfig config, double progress) {
@@ -120,13 +133,6 @@ public class DragonCoreListener implements Listener {
             return;
         }
 
-        FutureSlotAPI.getSlotItem(player, slot).thenAccept(itemStack ->
-                Bukkit.getScheduler().runTask(plugin, () -> KeySlotPotionHandler.useSlotPotionOnRelease(
-                        player,
-                        key,
-                        itemStack,
-                        updatedItem -> FutureSlotAPI.setSlotItem(player, slot, updatedItem, true),
-                        DISPLAY_REPORTER
-                )));
+        KeySlotPotionHandler.onKeyRelease(player, key, slotAccess(player, slot), DISPLAY_REPORTER);
     }
 }

@@ -6,11 +6,13 @@ import com.germ.germplugin.api.KeyType;
 import com.germ.germplugin.api.event.GermKeyDownEvent;
 import com.germ.germplugin.api.event.GermKeyUpEvent;
 import me.chenfeng.attributepotion.manager.ConfigManager;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public class GermPluginListener implements Listener {
     public GermPluginListener() {
@@ -34,14 +36,7 @@ public class GermPluginListener implements Listener {
             return;
         }
 
-        ItemStack itemStack = GermSlotAPI.getItemStackFromIdentity(event.getPlayer(), slot);
-        KeySlotPotionHandler.handleKeyPress(
-                event.getPlayer(),
-                key,
-                itemStack,
-                updatedItem -> GermSlotAPI.saveItemStackToIdentity(event.getPlayer(), slot, updatedItem),
-                null
-        );
+        KeySlotPotionHandler.onKeyPress(event.getPlayer(), key, slotAccess(event.getPlayer(), slot), null);
     }
 
     @EventHandler
@@ -53,13 +48,22 @@ public class GermPluginListener implements Listener {
             return;
         }
 
-        ItemStack itemStack = GermSlotAPI.getItemStackFromIdentity(event.getPlayer(), slot);
-        KeySlotPotionHandler.useSlotPotionOnRelease(
-                event.getPlayer(),
-                key,
-                itemStack,
-                updatedItem -> GermSlotAPI.saveItemStackToIdentity(event.getPlayer(), slot, updatedItem)
-        );
+        KeySlotPotionHandler.onKeyRelease(event.getPlayer(), key, slotAccess(event.getPlayer(), slot), null);
+    }
+
+    private KeySlotPotionHandler.SlotAccess slotAccess(Player player, String slot) {
+        return new KeySlotPotionHandler.SlotAccess() {
+            @Override
+            public CompletableFuture<ItemStack> read() {
+                return CompletableFuture.completedFuture(GermSlotAPI.getItemStackFromIdentity(player, slot));
+            }
+
+            @Override
+            public CompletableFuture<?> write(ItemStack itemStack) {
+                GermSlotAPI.saveItemStackToIdentity(player, slot, itemStack);
+                return CompletableFuture.completedFuture(null);
+            }
+        };
     }
 
     private String toConfigKey(GermKeyDownEvent event) {

@@ -89,6 +89,50 @@ final class KeyPressTracker {
     }
 
     /**
+     * 清理玩家的所有按键状态和任务。
+     *
+     * @param uuid 玩家 UUID
+     */
+    static void clearAll(UUID uuid) {
+        String prefix = uuid + ":";
+        PRESS_STATE_MAP.keySet().removeIf(key -> key.startsWith(prefix));
+        TASK_MAP.entrySet().removeIf(entry -> {
+            if (entry.getKey().startsWith(prefix)) {
+                entry.getValue().cancel();
+                return true;
+            }
+            return false;
+        });
+        ACTIVE_KEY_MAP.remove(uuid);
+    }
+
+    /**
+     * 判断玩家的指定按键是否有蓄力记录。
+     */
+    static boolean hasState(Player player, String key) {
+        return state(player, key) != null;
+    }
+
+    /**
+     * 标记本次蓄力已经触发。蓄力任务和松开事件都可能走到触发，只有第一个调用能拿到 true。
+     *
+     * @return 本次调用抢到触发权时返回 true；蓄力记录已被清理时返回 false
+     */
+    static boolean markFired(Player player, String key) {
+        PressState state = state(player, key);
+        if (state == null) {
+            return false;
+        }
+        synchronized (state) {
+            if (state.fired) {
+                return false;
+            }
+            state.fired = true;
+            return true;
+        }
+    }
+
+    /**
      * 记录松开按键，并返回当前蓄力秒数。
      * <p>
      * 该方法不会清零蓄力，调用方应在成功触发药水后调用 {@link #clear(Player, String)}。
@@ -243,6 +287,7 @@ final class KeyPressTracker {
         private double chargeSeconds;
         private long pressStartMillis = -1;
         private long lastReleaseMillis;
+        private boolean fired;
 
         private PressState(long now) {
             this.lastReleaseMillis = now;

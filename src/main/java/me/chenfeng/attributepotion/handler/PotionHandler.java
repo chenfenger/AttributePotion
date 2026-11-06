@@ -7,15 +7,14 @@ import me.chenfeng.attributepotion.api.event.PotionUseEvent;
 import me.chenfeng.attributepotion.data.ActivePotion;
 import me.chenfeng.attributepotion.data.PlayerProfile;
 import me.chenfeng.attributepotion.data.PotionConfig;
-import me.chenfeng.attributepotion.enums.MatchMode;
 import me.chenfeng.attributepotion.hook.PAPIHook;
 import me.chenfeng.attributepotion.hook.attribute.AbstractAttributeHook;
 import me.chenfeng.attributepotion.hook.mana.ManaHook;
 import me.chenfeng.attributepotion.manager.ConfigManager;
 import me.chenfeng.attributepotion.manager.PlayerManager;
 import me.chenfeng.attributepotion.manager.constructor.CommandPhase;
-import me.chenfeng.attributepotion.manager.constructor.OptionalConfig;
 import me.chenfeng.attributepotion.manager.constructor.OptionKey;
+import me.chenfeng.attributepotion.manager.constructor.OptionalConfig;
 import me.chenfeng.attributepotion.manager.constructor.RegenConfig;
 import me.chenfeng.attributepotion.manager.constructor.RegenType;
 import me.chenfeng.attributepotion.manager.constructor.TriggerType;
@@ -35,57 +34,58 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 
 public class PotionHandler {
 
-    private static List<PotionConfig> sortedPotionConfigs = null;
+    /**
+     * 属性数值保留的小数位。属性常用 0.05 这样的小数，不能和界面显示一样只留一位。
+     */
+    private static final int ATTRIBUTE_SCALE = 4;
+
+    private static volatile MatchIndex matchIndex;
+    private static final Attribute MAX_HEALTH_ATTRIBUTE = resolveMaxHealthAttribute();
 
     /**
-     * 清理药水匹配排序缓存，通常在配置重载后调用。
+     * 清理药水匹配缓存，通常在配置重载后调用。
      */
     public static void clearCache() {
-        sortedPotionConfigs = null;
+        matchIndex = null;
     }
 
     /**
-     * 处理玩家使用药水的入口方法。
-     * <p>
-     * 根据物品自动匹配对应的药水配置，如果匹配成功则应用药水效果。
-     * 
-     * @param player 使用药水的玩家对象
-     * @param itemStack 要使用的物品堆栈
-     * @return 是否成功使用药水
+     * 匹配物品并按完整流程使用药水。
+     *
+     * @param player 使用药水的玩家
+     * @param itemStack 要使用的物品
+     * @return 是否成功使用
      */
     public static boolean usePotion(Player player, ItemStack itemStack) {
-        long start = debugStart();
-        PotionConfig potionConfig = matchPotion(itemStack);
-        debugTiming("usePotion(item): match=" + potionName(potionConfig), start);
-        return usePotion(player, itemStack, potionConfig, null);
+        return usePotion(player, itemStack, matchPotion(itemStack), null);
     }
 
     /**
      * 按指定触发来源匹配并使用物品药水。
      */
     public static boolean usePotion(Player player, ItemStack itemStack, TriggerType triggerType) {
-        long start = debugStart();
-        PotionConfig potionConfig = matchPotion(itemStack);
-        debugTiming("usePotion(item, trigger=" + triggerType + "): match=" + potionName(potionConfig), start);
-        return usePotion(player, itemStack, potionConfig, triggerType);
+        return usePotion(player, itemStack, matchPotion(itemStack), triggerType);
     }
 
     /**
      * 使用已经匹配好的药水配置，避免重复执行物品匹配。
      */
     public static boolean usePotion(Player player, ItemStack itemStack, PotionConfig potionConfig, TriggerType triggerType) {
-        long start = debugStart();
         if (potionConfig == null || !allowsTrigger(potionConfig, triggerType)) {
-            debugTiming("usePotion(preMatched): denied/null trigger=" + triggerType, start);
             return false;
         }
 
@@ -93,72 +93,31 @@ public class PotionHandler {
         if (used) {
             applyItemCooldown(player, itemStack, potionConfig);
         }
-        debugTiming("usePotion(preMatched): potion=" + potionConfig.getKey() + ", used=" + used, start);
         return used;
     }
 
     /**
-     * 处理玩家使用药水的完整流程。
-     * <p>
-     * 依次检查：
-     * 1. Optional 条件（潜行、覆盖等）
-     * 2. 药水自身冷却
-     * 3. 药水组冷却
-     * 4. 使用条件（conditions）
-     * 如果所有检查通过，则应用药水效果。
+     * 按节点使用药水。依次检查数据加载、可选条件、冷却、使用条件和使用事件，全部通过后应用效果。
      *
-     * @param player 使用药水的玩家对象
-     * @param potionKey 药水配置键名
+     * @param player 使用药水的玩家
+     * @param potionKey 药水节点
      * @return 是否使用成功
      */
     public static boolean usePotion(Player player, String potionKey) {
-        long totalStart = debugStart();
+        long start = debugStart();
         PotionConfig potionConfig = ConfigManager.getPotionConfig(potionKey);
         if (potionConfig == null) {
-            debugTiming("usePotion(" + potionKey + "): config missing", totalStart);
             return false;
         }
 
-        long stageStart = debugStart();
         PlayerProfile profile = PlayerManager.getOrCreateProfile(player);
-        debugTiming("usePotion(" + potionKey + "): get profile", stageStart);
+        boolean applied = passesChecks(player, profile, potionConfig)
+                && !PotionUseEvent.callEvent(player, potionConfig)
+                && applyPotionEffects(player, profile, potionConfig, true);
 
-        stageStart = debugStart();
-        if (!checkOptionalConditions(player, profile, potionConfig)) {
-            debugTiming("usePotion(" + potionKey + "): optional denied", stageStart);
-            debugTiming("usePotion(" + potionKey + "): total=false", totalStart);
-            return false;
+        if (start != 0L) {
+            debugTiming("usePotion(" + potionKey + "): result=" + applied, start);
         }
-        debugTiming("usePotion(" + potionKey + "): optional", stageStart);
-
-        stageStart = debugStart();
-        if (!checkCooldowns(player, profile, potionConfig)) {
-            debugTiming("usePotion(" + potionKey + "): cooldown denied", stageStart);
-            debugTiming("usePotion(" + potionKey + "): total=false", totalStart);
-            return false;
-        }
-        debugTiming("usePotion(" + potionKey + "): cooldown", stageStart);
-
-        stageStart = debugStart();
-        if (!checkConditions(player, potionConfig)) {
-            debugTiming("usePotion(" + potionKey + "): conditions denied", stageStart);
-            debugTiming("usePotion(" + potionKey + "): total=false", totalStart);
-            return false;
-        }
-        debugTiming("usePotion(" + potionKey + "): conditions", stageStart);
-
-        stageStart = debugStart();
-        if (PotionUseEvent.callEvent(player, potionConfig)) {
-            debugTiming("usePotion(" + potionKey + "): event cancelled", stageStart);
-            debugTiming("usePotion(" + potionKey + "): total=false", totalStart);
-            return false;
-        }
-        debugTiming("usePotion(" + potionKey + "): event", stageStart);
-
-        stageStart = debugStart();
-        boolean applied = applyPotionEffects(player, profile, potionConfig);
-        debugTiming("usePotion(" + potionKey + "): apply", stageStart);
-        debugTiming("usePotion(" + potionKey + "): total=" + applied, totalStart);
         return applied;
     }
 
@@ -166,26 +125,17 @@ public class PotionHandler {
      * 直接应用药水，跳过可选条件、冷却、使用条件和使用事件。
      */
     public static boolean forceUsePotion(Player player, String potionKey) {
-        long start = debugStart();
         PotionConfig potionConfig = ConfigManager.getPotionConfig(potionKey);
         if (potionConfig == null) {
-            debugTiming("forceUsePotion(" + potionKey + "): config missing", start);
             return false;
         }
-
-        PlayerProfile profile = PlayerManager.getOrCreateProfile(player);
-        boolean applied = applyPotionEffects(player, profile, potionConfig);
-        debugTiming("forceUsePotion(" + potionKey + "): applied=" + applied, start);
-        return applied;
+        return applyPotionEffects(player, PlayerManager.getOrCreateProfile(player), potionConfig, true);
     }
 
     /**
-     * 增加或减少已激活非永久药水的剩余时间。
-     */
-    /**
      * 预检查玩家当前是否可以使用指定药水。
      * <p>
-     * 该方法只做条件判断，不触发使用事件，也不应用药水效果。按键蓄力开始前可用它决定是否通知前端显示进度。
+     * 只做条件判断，不触发使用事件，也不应用效果。按键蓄力开始前用它决定是否显示进度。
      *
      * @param player 玩家
      * @param potionConfig 药水配置
@@ -196,92 +146,73 @@ public class PotionHandler {
         if (player == null || potionConfig == null || !allowsTrigger(potionConfig, triggerType)) {
             return false;
         }
-
-        PlayerProfile profile = PlayerManager.getOrCreateProfile(player);
-        return checkOptionalConditions(player, profile, potionConfig)
-                && checkCooldowns(player, profile, potionConfig)
-                && checkConditions(player, potionConfig);
+        return passesChecks(player, PlayerManager.getOrCreateProfile(player), potionConfig);
     }
 
+    private static boolean passesChecks(Player player, PlayerProfile profile, PotionConfig config) {
+        if (!profile.isDataLoaded()) {
+            ConfigManager.sendMessage(player, "data-loading", null);
+            return false;
+        }
+        return checkOptionalConditions(player, profile, config)
+                && checkCooldowns(player, profile, config)
+                && checkConditions(player, config);
+    }
+
+    /**
+     * 增加或减少已激活非永久药水的剩余时间。
+     */
     public static boolean addPotionTime(Player player, String potionKey, double seconds) {
-        long start = debugStart();
-        if (seconds == 0) {
-            debugTiming("addPotionTime(" + potionKey + "): zero seconds", start);
+        if (seconds == 0 || Double.isNaN(seconds) || Double.isInfinite(seconds)) {
             return false;
         }
 
         PlayerProfile profile = PlayerManager.getProfile(player);
         if (profile == null) {
-            debugTiming("addPotionTime(" + potionKey + "): profile missing", start);
             return false;
         }
 
         ActivePotion activePotion = profile.getActivePotions().get(potionKey);
         PotionConfig config = ConfigManager.getPotionConfig(potionKey);
         if (activePotion == null || config == null || activePotion.isPermanent()) {
-            debugTiming("addPotionTime(" + potionKey + "): active/config missing or permanent", start);
             return false;
         }
 
-        long stageStart = debugStart();
         activePotion.cancelAllTickTasks();
         activePotion.addTime(seconds);
-        debugTiming("addPotionTime(" + potionKey + "): update active time", stageStart);
         if (activePotion.isExpired()) {
             PlayerManager.removeActivePotion(player, profile, potionKey);
-            debugTiming("addPotionTime(" + potionKey + "): removed expired potion", start);
             return true;
         }
 
-        stageStart = debugStart();
-        applyVanillaEffects(player, config, activePotion.getRemainingSeconds());
-        debugTiming("addPotionTime(" + potionKey + "): refresh vanilla effects", stageStart);
-        stageStart = debugStart();
+        applyRemainingVanillaEffects(player, config, activePotion);
         applyRegen(player, config, activePotion, activePotion.getElapsedSeconds());
-        debugTiming("addPotionTime(" + potionKey + "): reschedule regen", stageStart);
-        stageStart = debugStart();
         scheduleTickCommands(player, config, activePotion);
-        debugTiming("addPotionTime(" + potionKey + "): reschedule tick commands", stageStart);
-        stageStart = debugStart();
         scheduleBossBar(player, config, activePotion);
-        debugTiming("addPotionTime(" + potionKey + "): reschedule bossbar", stageStart);
-        debugTiming("addPotionTime(" + potionKey + "): total", start);
         return true;
     }
 
-    private static boolean allowsTrigger(PotionConfig config, TriggerType triggerType) {
+    /**
+     * 判断药水是否接受指定的触发方式。triggerType 为 null 表示不限制触发方式（API、指令、原版消耗）。
+     */
+    public static boolean allowsTrigger(PotionConfig config, TriggerType triggerType) {
         if (triggerType == null) {
             return true;
         }
-        return config.getTriggers() == null
-                || config.getTriggers().isEmpty()
-                || config.getTriggers().contains(TriggerType.ALL)
+        return config.getTriggers().contains(TriggerType.ALL)
                 || config.getTriggers().contains(triggerType);
     }
 
     /**
-     * 当药水启用 COOL 选项时，应用 Bukkit 原版物品冷却显示。
+     * 当药水启用 COOL 选项时，应用原版物品冷却显示。
      */
     private static void applyItemCooldown(Player player, ItemStack itemStack, PotionConfig config) {
         if (!config.getOptional().isEnabled(OptionKey.COOL, false) || config.getCooldown() <= 0) {
             return;
         }
-
         player.setCooldown(itemStack.getType(), (int) Math.round(config.getCooldown() * 20));
     }
 
-    /**
-     * 检查 Optional 配置中的条件。
-     * <p>
-     * 包括：
-     * - SHIFT: 是否需要潜行
-     * - COVER: 是否允许覆盖已有药水效果
-     * 
-     * @param player 玩家对象
-     * @param profile 玩家档案
-     * @param config 药水配置
-     * @return 是否满足所有 Optional 条件
-     */
     private static boolean checkOptionalConditions(Player player, PlayerProfile profile, PotionConfig config) {
         OptionalConfig optional = config.getOptional();
 
@@ -290,49 +221,29 @@ public class PotionHandler {
             return false;
         }
 
-        if (!optional.isEnabled(OptionKey.COVER, true)) {
-            if (profile.getActivePotions().containsKey(config.getKey())) {
-                Map<String, String> replacements = new HashMap<>();
-                replacements.put("%id%", config.getKey());
-                ConfigManager.sendMessage(player, "cover-deny", replacements);
-                return false;
-            }
+        if (!optional.isEnabled(OptionKey.COVER, true) && profile.getActivePotions().containsKey(config.getKey())) {
+            ConfigManager.sendMessage(player, "cover-deny", potionPlaceholders(config));
+            return false;
         }
 
         return true;
     }
 
-    /**
-     * 检查药水和药水组的冷却时间。
-     * <p>
-     * 根据配置检查：
-     * - 药水自身冷却
-     * - 药水组冷却
-     * 
-     * @param player 玩家对象
-     * @param profile 玩家档案
-     * @param config 药水配置
-     * @return 是否不在冷却中
-     */
     private static boolean checkCooldowns(Player player, PlayerProfile profile, PotionConfig config) {
-
         if (profile.isPotionOnCooldown(config.getKey())) {
-            Map<String, String> replacements = new HashMap<>();
-            replacements.put("%potion%", config.getKey());
-            replacements.put("%cooldown%", formatSeconds(profile.getPotionCooldownRemaining(config.getKey())));
+            Map<String, String> replacements = potionPlaceholders(config);
+            replacements.put("%cooldown%", formatNumber(profile.getPotionCooldownRemaining(config.getKey())));
             ConfigManager.sendMessage(player, "on-potion-cooldown", replacements);
             return false;
         }
 
         String groupName = config.getGroup();
-        if (groupName != null && !groupName.isEmpty()) {
-            if (profile.isGroupOnCooldown(groupName)) {
-                Map<String, String> replacements = new HashMap<>();
-                replacements.put("%group%", groupName);
-                replacements.put("%cooldown%", formatSeconds(profile.getGroupCooldownRemaining(groupName)));
-                ConfigManager.sendMessage(player, "on-group-cooldown", replacements);
-                return false;
-            }
+        if (groupName != null && !groupName.isEmpty() && profile.isGroupOnCooldown(groupName)) {
+            Map<String, String> replacements = potionPlaceholders(config);
+            replacements.put("%group%", groupName);
+            replacements.put("%cooldown%", formatNumber(profile.getGroupCooldownRemaining(groupName)));
+            ConfigManager.sendMessage(player, "on-group-cooldown", replacements);
+            return false;
         }
 
         return true;
@@ -341,12 +252,8 @@ public class PotionHandler {
     /**
      * 检查药水的使用条件。
      * <p>
-     * 条件格式：表达式&lt;-&gt失败消息
-     * 例如："%player_level% >= 10&lt;-&gt&c你的等级不足10级!"
-     * 
-     * @param player 玩家对象
-     * @param config 药水配置
-     * @return 是否满足所有条件
+     * 条件格式：{@code 表达式<->失败消息}，失败消息可省略。
+     * 表达式解析失败时视为不满足，避免配置写错后条件被放行。
      */
     private static boolean checkConditions(Player player, PotionConfig config) {
         List<String> conditions = config.getConditions();
@@ -354,33 +261,30 @@ public class PotionHandler {
             return true;
         }
 
+        Pattern splitPattern = Pattern.compile(Pattern.quote(ConfigManager.getSplit()));
         for (String condition : conditions) {
             if (condition == null || condition.isEmpty()) {
                 continue;
             }
 
-            String[] parts = condition.split(java.util.regex.Pattern.quote(ConfigManager.getSplit()), 2);
-            if (parts.length != 2) {
-                continue;
+            String[] parts = splitPattern.split(condition, 2);
+            String expression = parts[0].trim();
+            String failMessage = parts.length == 2 ? parts[1].trim() : "";
+
+            boolean passed;
+            try {
+                passed = ExpressionUtil.check(PAPIHook.replacePlaceholders(player, expression));
+            } catch (RuntimeException e) {
+                LoggerUtil.warning("[AttributePotion] 药水 " + config.getKey() + " 的条件表达式无法解析，已按不满足处理: "
+                        + expression + "（" + e.getMessage() + "）");
+                passed = false;
             }
 
-            String expression = parts[0].trim();
-            String failMessage = parts[1].trim();
-
-            String replacedExpression = PAPIHook.replacePlaceholders(player, expression);
-            
-            try {
-                boolean result = ExpressionUtil.check(replacedExpression);
-                if (!result) {
-                    Map<String, String> replacements = new HashMap<>();
-                    replacements.put("%id%", config.getKey());
+            if (!passed) {
+                if (!failMessage.isEmpty()) {
                     player.sendMessage(failMessage.replace("%id%", config.getKey()));
-                    ConfigManager.sendMessage(player, "use-deny", replacements);
-                    return false;
                 }
-            } catch (Exception e) {
-                LoggerUtil.warning("[AttributePotion] 条件表达式解析失败: " + expression);
-                e.printStackTrace();
+                ConfigManager.sendMessage(player, "use-deny", potionPlaceholders(config));
                 return false;
             }
         }
@@ -390,80 +294,45 @@ public class PotionHandler {
 
     /**
      * 应用药水效果。
-     * <p>
-     * 执行以下操作：
-     * 1. 创建 ActivePotion 实例
-     * 2. 应用属性加成
-     * 3. 应用原版药水效果
-     * 4. 设置冷却时间
-     * 5. 执行 SUCCESS 命令
-     * 
-     * @param player 玩家对象
-     * @param profile 玩家档案
-     * @param config 药水配置
-     * @return 是否成功应用
+     *
+     * @param primary true 表示玩家自己使用：设置冷却、发送使用消息并扩散范围效果；
+     *                false 表示被范围效果波及：不占用该玩家的冷却
      */
-    private static boolean applyPotionEffects(Player player, PlayerProfile profile, PotionConfig config) {
-        return applyPotionEffects(player, profile, config, true);
-    }
-
-    private static boolean applyPotionEffects(Player player, PlayerProfile profile, PotionConfig config, boolean allowRange) {
-        long totalStart = debugStart();
-        long stageStart = debugStart();
+    private static boolean applyPotionEffects(Player player, PlayerProfile profile, PotionConfig config, boolean primary) {
         PlayerManager.removeActivePotion(player, profile, config.getKey());
 
         long durationMillis = config.getTime() < 0 ? -1 : (long) (config.getTime() * 1000);
         ActivePotion activePotion = new ActivePotion(config.getKey(), player, durationMillis);
-
         profile.addActivePotion(config.getKey(), activePotion);
-        profile.setPotionCooldown(config.getKey(), config.getCooldown());
 
-        String groupName = config.getGroup();
-        if (groupName != null && !groupName.isEmpty()) {
-            profile.setGroupCooldown(groupName, config.getCooldown());
+        if (primary) {
+            profile.setPotionCooldown(config.getKey(), config.getCooldown());
+            String groupName = config.getGroup();
+            if (groupName != null && !groupName.isEmpty()) {
+                profile.setGroupCooldown(groupName, config.getCooldown());
+            }
         }
-        debugTiming("applyPotionEffects(" + config.getKey() + "): state/cooldown", stageStart);
 
-        stageStart = debugStart();
         applyAttributes(player, config, activePotion);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): attributes", stageStart);
-        stageStart = debugStart();
         applyVanillaEffects(player, config);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): vanilla effects", stageStart);
-        stageStart = debugStart();
-        applyRegen(player, config, activePotion);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): regen", stageStart);
-        stageStart = debugStart();
+        applyRegen(player, config, activePotion, 0);
         scheduleTickCommands(player, config, activePotion);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): tick commands", stageStart);
-        stageStart = debugStart();
         scheduleBossBar(player, config, activePotion);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): bossbar", stageStart);
 
-        Map<String, String> replacements = new HashMap<>();
-        replacements.put("%id%", config.getKey());
-        replacements.put("%potion%", config.getKey());
-        replacements.put("%time%", String.valueOf(config.getTime()));
-        stageStart = debugStart();
-        ConfigManager.sendMessage(player, "use-potion", replacements);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): message", stageStart);
+        if (primary) {
+            Map<String, String> replacements = potionPlaceholders(config);
+            replacements.put("%time%", formatNumber(config.getTime()));
+            ConfigManager.sendMessage(player, "use-potion", replacements);
+        }
 
-        stageStart = debugStart();
-        List<String> successCommands = config.getCommands().get(CommandPhase.SUCCESS);
-        CommandHandler.executeCommands(player, successCommands, config.getTime());
-        debugTiming("applyPotionEffects(" + config.getKey() + "): success commands", stageStart);
-        stageStart = debugStart();
+        CommandHandler.executeCommands(player, config.getCommands().get(CommandPhase.SUCCESS), config.getTime());
         PotionApplyEvent.callEvent(player, config, activePotion);
-        debugTiming("applyPotionEffects(" + config.getKey() + "): apply event", stageStart);
-        if (allowRange) {
-            stageStart = debugStart();
+
+        if (primary) {
             applyRangeEffects(player, config);
-            debugTiming("applyPotionEffects(" + config.getKey() + "): range", stageStart);
         }
 
         LoggerUtil.debug("[AttributePotion] 玩家 " + player.getName() + " 成功使用药水 " + config.getKey());
-
-        debugTiming("applyPotionEffects(" + config.getKey() + "): total", totalStart);
         return true;
     }
 
@@ -471,24 +340,18 @@ public class PotionHandler {
      * 玩家数据加载完成后恢复持久化保存的激活药水。
      */
     public static void restoreActivePotion(Player player, ActivePotion activePotion) {
-        long start = debugStart();
         PotionConfig config = ConfigManager.getPotionConfig(activePotion.getPotionKey());
         if (config == null || activePotion.isExpired()) {
-            debugTiming("restoreActivePotion(" + activePotion.getPotionKey() + "): skipped", start);
             return;
         }
 
         applyStoredAttributes(player, activePotion);
-        applyVanillaEffects(player, config, activePotion.getRemainingSeconds());
+        applyRemainingVanillaEffects(player, config, activePotion);
         applyRegen(player, config, activePotion, activePotion.getElapsedSeconds());
         scheduleTickCommands(player, config, activePotion);
         scheduleBossBar(player, config, activePotion);
-        debugTiming("restoreActivePotion(" + activePotion.getPotionKey() + "): total", start);
     }
 
-    /**
-     * 重新应用激活药水快照中保存的属性。
-     */
     private static void applyStoredAttributes(Player player, ActivePotion activePotion) {
         List<String> attributes = activePotion.getAppliedAttributes();
         if (attributes == null || attributes.isEmpty()) {
@@ -516,7 +379,7 @@ public class PotionHandler {
         List<String> affectedNames = new ArrayList<>();
         double distanceSquared = config.getDistance() * config.getDistance();
         for (Player target : Bukkit.getOnlinePlayers()) {
-            if (target.equals(source) || !target.getWorld().equals(source.getWorld())) {
+            if (target.equals(source) || target.isDead() || !target.getWorld().equals(source.getWorld())) {
                 continue;
             }
             if (target.getLocation().distanceSquared(source.getLocation()) > distanceSquared) {
@@ -532,19 +395,15 @@ public class PotionHandler {
             applyPotionEffects(target, targetProfile, config, false);
             affectedNames.add(target.getName());
 
-            Map<String, String> otherReplacements = new HashMap<>();
+            Map<String, String> otherReplacements = potionPlaceholders(config);
             otherReplacements.put("%player%", source.getName());
-            otherReplacements.put("%potion%", config.getKey());
-            otherReplacements.put("%id%", config.getKey());
             ConfigManager.sendMessage(target, "other-potion", otherReplacements);
         }
 
         if (!affectedNames.isEmpty()) {
-            Map<String, String> replacements = new HashMap<>();
+            Map<String, String> replacements = potionPlaceholders(config);
             replacements.put("%range%", formatNumber(config.getDistance()));
             replacements.put("%playerList%", String.join(", ", affectedNames));
-            replacements.put("%potion%", config.getKey());
-            replacements.put("%id%", config.getKey());
             ConfigManager.sendMessage(source, "near-potion", replacements);
         }
     }
@@ -572,7 +431,7 @@ public class PotionHandler {
     private static List<String> buildAttributeLines(Player player, PotionConfig config) {
         Map<String, String> configured = config.getAttributes();
         if (configured == null || configured.isEmpty()) {
-            return new ArrayList<>();
+            return Collections.emptyList();
         }
 
         List<String> attributes = new ArrayList<>();
@@ -582,87 +441,129 @@ public class PotionHandler {
             }
 
             String value = entry.getValue() == null ? "" : PAPIHook.replacePlaceholders(player, entry.getValue()).trim();
-            if (value.isEmpty()) {
-                continue;
+            if (!value.isEmpty()) {
+                attributes.add(entry.getKey() + ": " + formatAttributeValue(value));
             }
-
-            attributes.add(entry.getKey() + ": " + formatAttributeValue(value));
         }
         return attributes;
     }
 
     private static String formatAttributeValue(String value) {
         try {
-            double result = ExpressionUtil.eval(value);
-            return formatNumber(result);
+            return new BigDecimal(ExpressionUtil.eval(value))
+                    .setScale(ATTRIBUTE_SCALE, RoundingMode.HALF_UP)
+                    .stripTrailingZeros()
+                    .toPlainString();
         } catch (IllegalArgumentException ignored) {
             return value;
         }
     }
 
     private static void applyVanillaEffects(Player player, PotionConfig config) {
-        applyVanillaEffects(player, config, -1);
+        for (PotionEffect effect : config.getEffects()) {
+            player.addPotionEffect(effect, true);
+        }
     }
 
-    private static void applyVanillaEffects(Player player, PotionConfig config, double maxRemainingSeconds) {
-        List<PotionEffect> effects = config.getEffects();
-        if (effects == null || effects.isEmpty()) {
+    /**
+     * 按已经过去的时间补上原版效果的剩余时长，用于登录恢复、延长时长和复活。
+     * <p>
+     * 效果有自己的时长，不能在恢复时重新给满，否则下线再上线就能刷新效果。
+     */
+    public static void applyRemainingVanillaEffects(Player player, PotionConfig config, ActivePotion activePotion) {
+        for (PotionEffect effect : config.getEffects()) {
+            int ticks = remainingEffectTicks(effect, config, activePotion);
+            if (ticks > 0) {
+                player.addPotionEffect(new PotionEffect(effect.getType(), ticks, effect.getAmplifier(),
+                        effect.isAmbient(), effect.hasParticles()), true);
+            }
+        }
+    }
+
+    private static int remainingEffectTicks(PotionEffect effect, PotionConfig config, ActivePotion activePotion) {
+        // 永久药水里写 {time} 的效果，一直持续到药水被移除
+        if (effect.getDuration() == Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+
+        long remainingTicks = activePotion.isPermanent()
+                ? Long.MAX_VALUE
+                : Math.round(activePotion.getRemainingSeconds() * 20);
+
+        // 效果覆盖了药水的全程时，随药水一起结束，这样延长药水时长也会延长效果
+        if (config.getTime() > 0 && effect.getDuration() >= Math.round(config.getTime() * 20)) {
+            return (int) Math.min(Integer.MAX_VALUE, remainingTicks);
+        }
+
+        long ownRemaining = effect.getDuration() - Math.round(activePotion.getElapsedSeconds() * 20);
+        return (int) Math.max(0, Math.min(ownRemaining, remainingTicks));
+    }
+
+    /**
+     * 移除药水带来的原版效果。
+     * <p>
+     * 只移除等级相同的效果，避免误删其他来源给的更高等级效果。time 为 0 的药水是瞬时生效，
+     * 原版效果按自身时长继续，不在药水结束时移除。
+     */
+    public static void removeVanillaEffects(Player player, PotionConfig config) {
+        if (config.getTime() == 0) {
             return;
         }
-
-        for (PotionEffect effect : effects) {
-            PotionEffect applied = effect;
-            if (maxRemainingSeconds >= 0) {
-                int ticks = (int) Math.max(0, Math.min(effect.getDuration(), Math.round(maxRemainingSeconds * 20)));
-                if (ticks <= 0) {
-                    continue;
-                }
-                applied = new PotionEffect(effect.getType(), ticks, effect.getAmplifier(), effect.isAmbient(), effect.hasParticles());
+        for (PotionEffect effect : config.getEffects()) {
+            PotionEffect current = player.getPotionEffect(effect.getType());
+            if (current != null && current.getAmplifier() == effect.getAmplifier()) {
+                player.removePotionEffect(effect.getType());
             }
-            player.addPotionEffect(applied, true);
         }
     }
 
-    private static void applyRegen(Player player, PotionConfig config, ActivePotion activePotion) {
-        applyRegen(player, config, activePotion, 0);
-    }
-
+    /**
+     * 启动恢复任务。恢复点固定在药水开始后的第 0、1、2… 秒，
+     * 中途恢复（登录、延长时长）时对齐到下一个整秒，已经过去的恢复点不会重新发放。
+     *
+     * @param elapsedSeconds 药水已经过去的秒数，新使用时为 0
+     */
     private static void applyRegen(Player player, PotionConfig config, ActivePotion activePotion, double elapsedSeconds) {
         RegenConfig regen = config.getRegen();
-        if (regen == null || regen.asParsedMap().isEmpty()) {
+        if (regen == null) {
             return;
         }
 
         for (Map.Entry<RegenType, RegenConfig.RegenData> entry : regen.asParsedMap().entrySet()) {
             RegenConfig.RegenData data = entry.getValue();
-            if (data == null) {
+            double duration = data.getDuration();
+
+            if (duration == 0) {
+                if (elapsedSeconds <= 0) {
+                    applyRegenTick(player, entry.getKey(), data);
+                }
                 continue;
             }
 
-            double remainingSeconds = data.getDuration() - elapsedSeconds;
-            if (data.getDuration() <= 0 && elapsedSeconds <= 0) {
-                applyRegenTick(player, entry.getKey(), data);
-                continue;
-            }
-            if (remainingSeconds <= 0) {
+            int elapsedPoints = (int) Math.ceil(Math.max(0, elapsedSeconds));
+            // 负数表示持续到药水结束，只有永久药水写 {time} 时才会出现
+            int remainingPoints = duration < 0 ? Integer.MAX_VALUE : (int) Math.ceil(duration) - elapsedPoints;
+            if (remainingPoints <= 0) {
                 continue;
             }
 
+            long delay = elapsedSeconds <= 0 ? 0L : Math.round((elapsedPoints - elapsedSeconds) * 20);
             BukkitTask task = new BukkitRunnable() {
-                private int elapsedSeconds = 0;
-                private final int maxSeconds = (int) Math.ceil(remainingSeconds);
+                private int executed = 0;
 
                 @Override
                 public void run() {
-                    if (!activePotion.isActive() || elapsedSeconds >= maxSeconds) {
+                    if (!activePotion.isActive() || executed >= remainingPoints) {
                         cancel();
                         return;
                     }
-
-                    applyRegenTick(player, entry.getKey(), data);
-                    elapsedSeconds++;
+                    executed++;
+                    // 给死亡状态的玩家设置生命值会让客户端和服务端状态错乱
+                    if (!player.isDead()) {
+                        applyRegenTick(player, entry.getKey(), data);
+                    }
                 }
-            }.runTaskTimer(AttributePotion.getInstance(), 0L, 20L);
+            }.runTaskTimer(AttributePotion.getInstance(), delay, 20L);
             activePotion.registerTask(task.getTaskId());
         }
     }
@@ -710,7 +611,7 @@ public class PotionHandler {
     private static double currentValue(Player player, RegenType type) {
         switch (type) {
             case HEALTH:
-                return getCurrentHealth(player);
+                return player.getHealth();
             case HUNGER:
                 return player.getFoodLevel();
             case MANA:
@@ -735,11 +636,6 @@ public class PotionHandler {
         }
     }
 
-    /**
-     * 获取当前可用的魔力 Hook。
-     *
-     * @return 魔力 Hook，不可用时返回 null
-     */
     private static ManaHook getManaHook() {
         AttributePotion plugin = AttributePotion.getInstance();
         if (plugin == null) {
@@ -753,17 +649,15 @@ public class PotionHandler {
     /**
      * 调整玩家生命值，并限制在当前服务端允许的生命范围内。
      *
-     * @param player 玩家
      * @param amount 生命变化量，正数恢复，负数扣除
      */
+    @SuppressWarnings("deprecation")
     private static void addHealth(Player player, double amount) {
         double maxHealth = getMaxHealth(player);
         if (maxHealth <= 0) {
             return;
         }
-
-        double currentHealth = getCurrentHealth(player);
-        double newHealth = Math.max(0, Math.min(maxHealth, currentHealth + amount));
+        double newHealth = Math.max(0, Math.min(maxHealth, player.getHealth() + amount));
         try {
             player.setHealth(newHealth);
         } catch (IllegalArgumentException ignored) {
@@ -772,69 +666,28 @@ public class PotionHandler {
     }
 
     /**
-     * 获取玩家当前生命值。
-     *
-     * @param player 玩家
-     * @return 当前生命值
-     */
-    private static double getCurrentHealth(Player player) {
-        try {
-            return player.getHealth();
-        } catch (IllegalArgumentException ignored) {
-            return 0;
-        }
-    }
-
-    /**
-     * 获取玩家最大生命值。
-     * <p>
-     * 高版本 Bukkit 更推荐通过 Attribute 读取生命上限。这里优先尝试属性系统，并兼容不同版本的属性名；
-     * 如果属性不可用，再回退到旧版 Player#getMaxHealth。
-     *
-     * @param player 玩家
-     * @return 最大生命值
+     * 获取玩家最大生命值。优先读属性系统，高版本的属性名不同，所以按名称查找一次后缓存。
      */
     @SuppressWarnings("deprecation")
     private static double getMaxHealth(Player player) {
-        try {
-            AttributeInstance attribute = getMaxHealthAttribute(player);
-            if (attribute != null) {
-                return attribute.getValue();
+        if (MAX_HEALTH_ATTRIBUTE != null) {
+            AttributeInstance instance = player.getAttribute(MAX_HEALTH_ATTRIBUTE);
+            if (instance != null) {
+                return instance.getValue();
             }
-        } catch (Throwable ignored) {
         }
-
         return player.getMaxHealth();
     }
 
-    /**
-     * 获取最大生命属性实例。
-     *
-     * @param player 玩家
-     * @return 属性实例，不存在时返回 null
-     */
-    private static AttributeInstance getMaxHealthAttribute(Player player) {
-        Attribute attribute = findAttribute("GENERIC_MAX_HEALTH");
-        if (attribute == null) {
-            attribute = findAttribute("MAX_HEALTH");
+    private static Attribute resolveMaxHealthAttribute() {
+        for (String name : new String[]{"GENERIC_MAX_HEALTH", "MAX_HEALTH"}) {
+            try {
+                return (Attribute) Attribute.class.getMethod("valueOf", String.class).invoke(null, name);
+            } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+                // 继续尝试下一个属性名
+            }
         }
-        return attribute == null ? null : player.getAttribute(attribute);
-    }
-
-    /**
-     * 按名称查找 Bukkit 属性。
-     *
-     * @param name 属性枚举名
-     * @return 属性枚举，不存在时返回 null
-     */
-    private static Attribute findAttribute(String name) {
-        try {
-            Class<?> attributeClass = Class.forName("org.bukkit.attribute.Attribute");
-            Object attribute = attributeClass.getMethod("valueOf", String.class).invoke(null, name);
-            return (Attribute) attribute;
-        } catch (Throwable ignored) {
-            return null;
-        }
+        return null;
     }
 
     private static void scheduleTickCommands(Player player, PotionConfig config, ActivePotion activePotion) {
@@ -880,23 +733,21 @@ public class PotionHandler {
         activePotion.registerBossBar(bossBar);
         updateBossBar(bossBar, config, activePotion);
 
+        int interval = ConfigManager.getBossBarUpdateInterval();
         BukkitTask task = new BukkitRunnable() {
             @Override
             public void run() {
-                if (!activePotion.isActive() || activePotion.isExpired() || !player.isOnline()) {
+                if (!activePotion.isActive() || activePotion.isExpired()) {
                     bossBar.removeAll();
                     cancel();
                     return;
                 }
                 updateBossBar(bossBar, config, activePotion);
             }
-        }.runTaskTimer(AttributePotion.getInstance(), ConfigManager.getBossBarUpdateInterval(), ConfigManager.getBossBarUpdateInterval());
+        }.runTaskTimer(AttributePotion.getInstance(), interval, interval);
         activePotion.registerTask(task.getTaskId());
     }
 
-    /**
-     * 更新 BossBar 标题和进度。
-     */
     private static void updateBossBar(BossBar bossBar, PotionConfig config, ActivePotion activePotion) {
         double totalSeconds = activePotion.getTotalDurationSeconds();
         double remainingSeconds = activePotion.getRemainingSeconds();
@@ -905,9 +756,6 @@ public class PotionHandler {
         bossBar.setTitle(formatBossBarTitle(config, activePotion));
     }
 
-    /**
-     * 格式化 BossBar 标题占位符。
-     */
     private static String formatBossBarTitle(PotionConfig config, ActivePotion activePotion) {
         double remaining = activePotion.getRemainingSeconds();
         double total = activePotion.getTotalDurationSeconds();
@@ -915,318 +763,188 @@ public class PotionHandler {
         return ConfigManager.getBossBarTitle()
                 .replace("%id%", config.getKey())
                 .replace("%potion%", config.getKey())
-                .replace("%remaining%", formatSeconds(remaining))
-                .replace("%time%", formatSeconds(total))
-                .replace("%percent%", formatSeconds(percent));
+                .replace("%remaining%", formatNumber(remaining))
+                .replace("%time%", formatNumber(total))
+                .replace("%percent%", formatNumber(percent));
     }
 
-    /**
-     * 解析 BossBar 颜色。
-     */
     private static BarColor parseBossBarColor(String color) {
         try {
-            return BarColor.valueOf(color.toUpperCase(java.util.Locale.ROOT));
+            return BarColor.valueOf(color.toUpperCase(Locale.ROOT));
         } catch (Exception ignored) {
             return BarColor.BLUE;
         }
     }
 
-    /**
-     * 解析 BossBar 样式。
-     */
     private static BarStyle parseBossBarStyle(String style) {
         try {
-            return BarStyle.valueOf(style.toUpperCase(java.util.Locale.ROOT));
+            return BarStyle.valueOf(style.toUpperCase(Locale.ROOT));
         } catch (Exception ignored) {
             return BarStyle.SOLID;
         }
     }
 
-    private static String formatSeconds(double seconds) {
-        return formatNumber(seconds);
+    private static Map<String, String> potionPlaceholders(PotionConfig config) {
+        Map<String, String> replacements = new HashMap<>();
+        replacements.put("%id%", config.getKey());
+        replacements.put("%potion%", config.getKey());
+        return replacements;
     }
 
+    /**
+     * 格式化给玩家看的数字：整数不带小数点，其余保留一位小数。
+     */
     private static String formatNumber(double number) {
         if (Math.abs(number - Math.rint(number)) < 0.000001) {
             return String.valueOf((long) Math.rint(number));
         }
-        return String.format(java.util.Locale.ROOT, "%.1f", number);
+        return String.format(Locale.ROOT, "%.1f", number);
     }
 
-
-
     /**
-     * 检查物品是否为药水，并返回匹配的药水配置。
+     * 根据 match-mode 和 contain 配置查找物品对应的药水。
      * <p>
-     * 根据 ConfigManager 中配置的匹配模式（NAME/LORE/NBT）和包含模式（contain），
-     * 遍历所有药水配置，使用精确匹配或贪婪包含匹配找到对应的药水。
-     * 
+     * 物品的名称、Lore、NBT 只读取一次：左右键事件非常频繁，getItemMeta 和 NBT 读取都有复制开销，
+     * 不能放进遍历配置的循环里。
+     *
      * @param itemStack 要检查的物品
-     * @return 匹配的药水配置，如果不匹配则返回 null
+     * @return 匹配的药水配置，不匹配时返回 null
      */
     public static PotionConfig matchPotion(ItemStack itemStack) {
-        long start = debugStart();
         if (ItemUtil.isAir(itemStack)) {
-            debugTiming("matchPotion: air/null item", start);
             return null;
         }
 
-        MatchMode matchMode = ConfigManager.getMatchMode();
-        boolean contain = ConfigManager.isContain();
-        Map<String, PotionConfig> allPotions = ConfigManager.getAllPotionData();
-
-        PotionConfig result;
-        if (contain) {
-            result = matchWithContain(itemStack, matchMode, allPotions);
-        } else {
-            result = matchExact(itemStack, matchMode, allPotions);
+        long start = debugStart();
+        PotionConfig result = findPotion(itemStack);
+        if (start != 0L) {
+            debugTiming("matchPotion: mode=" + ConfigManager.getMatchMode()
+                    + ", result=" + (result == null ? "null" : result.getKey()), start);
         }
-        debugTiming("matchPotion: mode=" + matchMode
-                + ", contain=" + contain
-                + ", configs=" + allPotions.size()
-                + ", result=" + potionName(result), start);
         return result;
     }
 
-    /**
-     * 完全匹配模式：查找完全相等的匹配值。
-     * 
-     * @param itemStack 物品
-     * @param matchMode 匹配模式
-     * @param allPotions 所有药水配置
-     * @return 匹配的药水配置，如果不匹配则返回 null
-     */
-    private static PotionConfig matchExact(ItemStack itemStack, MatchMode matchMode, Map<String, PotionConfig> allPotions) {
-        long start = debugStart();
-        int checked = 0;
-        for (PotionConfig potionConfig : allPotions.values()) {
-            String matchValue = potionConfig.getMatch();
-            if (matchValue == null || matchValue.isEmpty()) {
-                continue;
-            }
-            checked++;
+    private static PotionConfig findPotion(ItemStack itemStack) {
+        switch (ConfigManager.getMatchMode()) {
+            case NAME:
+                ItemMeta nameMeta = itemStack.hasItemMeta() ? itemStack.getItemMeta() : null;
+                return nameMeta != null && nameMeta.hasDisplayName() ? matchText(nameMeta.getDisplayName()) : null;
+            case LORE:
+                ItemMeta loreMeta = itemStack.hasItemMeta() ? itemStack.getItemMeta() : null;
+                return loreMeta != null && loreMeta.hasLore() ? matchLines(loreMeta.getLore()) : null;
+            case NBT:
+                if (!ConfigManager.isNbtApiAvailable()) {
+                    return null;
+                }
+                String nbtKey = ConfigManager.getNbtKey();
+                String nbtValue = NBT.get(itemStack, nbt -> {
+                    return nbt.getString(nbtKey);
+                });
+                return nbtValue == null || nbtValue.isEmpty() ? null : matchText(nbtValue);
+            default:
+                return null;
+        }
+    }
 
-            boolean matched = false;
-
-            switch (matchMode) {
-                case NAME:
-                    matched = matchByName(itemStack, matchValue, false);
-                    break;
-                case LORE:
-                    matched = matchByLore(itemStack, matchValue, false);
-                    break;
-                case NBT:
-                    matched = matchByNBT(itemStack, matchValue, false);
-                    break;
-                default:
-                    break;
-            }
-
-            if (matched) {
-                debugTiming("matchExact: checked=" + checked + ", result=" + potionConfig.getKey(), start);
-                return potionConfig;
+    private static PotionConfig matchText(String text) {
+        MatchIndex index = getMatchIndex();
+        if (!ConfigManager.isContain()) {
+            return index.exact.get(text);
+        }
+        for (PotionConfig config : index.longestFirst) {
+            if (text.contains(config.getMatch())) {
+                return config;
             }
         }
-
-        debugTiming("matchExact: checked=" + checked + ", result=null", start);
         return null;
     }
 
-    /**
-     * 包含匹配模式：使用贪婪匹配策略，优先匹配最长的字符串。
-     * <p>
-     * 性能优化：按匹配值长度降序排序，找到第一个匹配立即返回。
-     * 
-     * @param itemStack 物品
-     * @param matchMode 匹配模式
-     * @param allPotions 所有药水配置
-     * @return 匹配的药水配置，如果不匹配则返回 null
-     */
-    private static PotionConfig matchWithContain(ItemStack itemStack, MatchMode matchMode, Map<String, PotionConfig> allPotions) {
-        long start = debugStart();
-        if (sortedPotionConfigs == null) {
-            sortedPotionConfigs = allPotions.values().stream()
-                    .filter(config -> config.getMatch() != null && !config.getMatch().isEmpty())
-                    .sorted((a, b) -> Integer.compare(b.getMatch().length(), a.getMatch().length()))
-                    .collect(Collectors.toList());
-            debugTiming("matchWithContain: rebuild sorted cache size=" + sortedPotionConfigs.size(), start);
-            start = debugStart();
+    private static PotionConfig matchLines(List<String> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return null;
         }
 
-        int checked = 0;
-        for (PotionConfig potionConfig : sortedPotionConfigs) {
-            String matchValue = potionConfig.getMatch();
-            if (matchValue == null || matchValue.isEmpty()) {
-                continue;
+        MatchIndex index = getMatchIndex();
+        if (!ConfigManager.isContain()) {
+            for (String line : lines) {
+                PotionConfig config = line == null ? null : index.exact.get(line);
+                if (config != null) {
+                    return config;
+                }
             }
-            checked++;
-
-            boolean matched = false;
-
-            switch (matchMode) {
-                case NAME:
-                    matched = matchByName(itemStack, matchValue, true);
-                    break;
-                case LORE:
-                    matched = matchByLore(itemStack, matchValue, true);
-                    break;
-                case NBT:
-                    matched = matchByNBT(itemStack, matchValue, true);
-                    break;
-                default:
-                    break;
-            }
-
-            if (matched) {
-                debugTiming("matchWithContain: checked=" + checked + ", result=" + potionConfig.getKey(), start);
-                return potionConfig;
-            }
+            return null;
         }
 
-        debugTiming("matchWithContain: checked=" + checked + ", result=null", start);
-        return null;
-    }
-
-    /**
-     * 通过物品名称匹配药水。
-     * <p>
-     * - 完全匹配：物品显示名称与配置中的 match 字符串完全相等
-     * - 包含匹配：物品显示名称包含配置中的 match 字符串（贪婪匹配，优先匹配更长的）
-     * 
-     * @param itemStack 物品
-     * @param matchValue 配置中的匹配字符串
-     * @param contain 是否使用包含匹配
-     * @return 是否匹配
-     */
-    private static boolean matchByName(ItemStack itemStack, String matchValue, boolean contain) {
-        ItemMeta meta = itemStack.getItemMeta();
-        if (meta == null || !meta.hasDisplayName()) {
-            return false;
-        }
-
-        String displayName = meta.getDisplayName();
-        
-        if (contain) {
-            return displayName.contains(matchValue);
-        } else {
-            return displayName.equals(matchValue);
-        }
-    }
-
-    /**
-     * 通过物品 Lore 匹配药水。
-     * <p>
-     * - 完全匹配：物品的某一行 Lore 与配置中的 match 字符串完全相等
-     * - 包含匹配：物品的某一行 Lore 包含配置中的 match 字符串（贪婪匹配，优先匹配更长的）
-     * 
-     * @param itemStack 物品
-     * @param matchValue 配置中的匹配字符串
-     * @param contain 是否使用包含匹配
-     * @return 是否匹配
-     */
-    private static boolean matchByLore(ItemStack itemStack, String matchValue, boolean contain) {
-        ItemMeta meta = itemStack.getItemMeta();
-        if (meta == null || !meta.hasLore()) {
-            return false;
-        }
-
-        List<String> lore = meta.getLore();
-        if (lore == null || lore.isEmpty()) {
-            return false;
-        }
-
-        for (String loreLine : lore) {
-            if (loreLine != null) {
-                if (contain) {
-                    if (loreLine.contains(matchValue)) {
-                        return true;
-                    }
-                } else {
-                    if (loreLine.equals(matchValue)) {
-                        return true;
-                    }
+        for (PotionConfig config : index.longestFirst) {
+            for (String line : lines) {
+                if (line != null && line.contains(config.getMatch())) {
+                    return config;
                 }
             }
         }
-
-        return false;
+        return null;
     }
 
-    /**
-     * 通过 NBT 标签匹配药水。
-     * <p>
-     * - 完全匹配：NBT 值与配置中的 match 字符串完全相等
-     * - 包含匹配：NBT 值包含配置中的 match 字符串
-     * 
-     * @param itemStack 物品
-     * @param matchValue 配置中的匹配字符串
-     * @param contain 是否使用包含匹配
-     * @return 是否匹配
-     */
-    private static boolean matchByNBT(ItemStack itemStack, String matchValue, boolean contain) {
-        if (!ConfigManager.isNbtApiAvailable()) {
-            return false;
+    private static MatchIndex getMatchIndex() {
+        MatchIndex index = matchIndex;
+        if (index == null) {
+            index = new MatchIndex(ConfigManager.getAllPotionData().values());
+            matchIndex = index;
         }
-
-        String nbtKey = ConfigManager.getNbtKey();
-        
-        return NBT.get(itemStack, readableNBT -> {
-            if (readableNBT == null) {
-                return false;
-            }
-
-            String nbtValue = readableNBT.getString(nbtKey);
-            if (nbtValue == null) {
-                return false;
-            }
-
-            if (contain) {
-                return nbtValue.contains(matchValue);
-            } else {
-                return nbtValue.equals(matchValue);
-            }
-        });
+        return index;
     }
 
     /**
-     * 检查物品是否为药水（简化版本，只返回布尔值）。
-     * 
-     * @param itemStack 要检查的物品
-     * @return 如果是药水返回 true，否则返回 false
+     * 判断物品是否为药水。
      */
     public static boolean isPotion(ItemStack itemStack) {
         return matchPotion(itemStack) != null;
     }
 
     /**
-     * 仅在 debug 开启时返回计时起点。
+     * 仅在 debug 开启时返回计时起点。调用方拼接日志前先判断返回值是否为 0，避免关闭 debug 时白白拼字符串。
      */
     private static long debugStart() {
         return ConfigManager.isDebug() ? System.nanoTime() : 0L;
     }
 
-    /**
-     * 在 debug 开启时输出耗时日志。
-     */
     private static void debugTiming(String logic, long startNanos) {
-        if (startNanos == 0L || !ConfigManager.isDebug()) {
-            return;
-        }
         LoggerUtil.debug("[AttributePotion][Timing] " + logic + " took "
-                + formatMillis(System.nanoTime() - startNanos) + " ms");
+                + String.format(Locale.ROOT, "%.3f", (System.nanoTime() - startNanos) / 1_000_000.0) + " ms");
     }
 
     /**
-     * 将纳秒格式化为保留三位小数的毫秒字符串。
+     * 药水匹配索引，配置重载后重建。
      */
-    private static String formatMillis(long nanos) {
-        return String.format(java.util.Locale.ROOT, "%.3f", nanos / 1_000_000.0);
-    }
+    private static final class MatchIndex {
+        /**
+         * contain 模式使用：按匹配值长度降序，优先命中更长的匹配值。
+         */
+        private final List<PotionConfig> longestFirst;
+        /**
+         * 完全匹配模式使用：匹配值到药水的映射。多个药水的匹配值相同时保留先加载的。
+         */
+        private final Map<String, PotionConfig> exact;
 
-    /**
-     * 将可能为空的药水配置转换为可读的调试名称。
-     */
-    private static String potionName(PotionConfig config) {
-        return config == null ? "null" : config.getKey();
+        private MatchIndex(Iterable<PotionConfig> configs) {
+            List<PotionConfig> valid = new ArrayList<>();
+            Map<String, PotionConfig> exactMap = new HashMap<>();
+            for (PotionConfig config : configs) {
+                String match = config.getMatch();
+                if (match == null || match.isEmpty()) {
+                    continue;
+                }
+                valid.add(config);
+                PotionConfig previous = exactMap.putIfAbsent(match, config);
+                if (previous != null) {
+                    LoggerUtil.warning("[AttributePotion] 药水 " + previous.getKey() + " 和 " + config.getKey()
+                            + " 的匹配值相同（" + match + "），后者不会被匹配到");
+                }
+            }
+            this.longestFirst = valid.stream()
+                    .sorted((a, b) -> Integer.compare(b.getMatch().length(), a.getMatch().length()))
+                    .collect(Collectors.toList());
+            this.exact = exactMap;
+        }
     }
 }

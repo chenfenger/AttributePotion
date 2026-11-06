@@ -1,6 +1,7 @@
 package me.chenfeng.attributepotion.hook.mana;
 
 import me.chenfeng.attributepotion.utils.LoggerUtil;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.entity.Player;
 
 import java.lang.reflect.Method;
@@ -25,8 +26,9 @@ public class SkillApiManaHook extends AbstractReflectionManaHook {
             Class<?> skillApiClass = Class.forName("com.sucy.skill.SkillAPI");
             Class<?> playerDataClass = Class.forName("com.sucy.skill.api.player.PlayerData");
 
-            hasPlayerDataMethod = skillApiClass.getMethod("hasPlayerData", Player.class);
-            getPlayerDataMethod = skillApiClass.getMethod("getPlayerData", Player.class);
+            // SkillAPI 的参数类型是 OfflinePlayer，getMethod 不会按子类匹配，不能写 Player.class
+            hasPlayerDataMethod = skillApiClass.getMethod("hasPlayerData", OfflinePlayer.class);
+            getPlayerDataMethod = skillApiClass.getMethod("getPlayerData", OfflinePlayer.class);
             getManaMethod = playerDataClass.getMethod("getMana");
             getMaxManaMethod = playerDataClass.getMethod("getMaxMana");
             setManaMethod = playerDataClass.getMethod("setMana", double.class);
