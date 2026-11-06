@@ -4,10 +4,12 @@ AttributePotion 是一个面向 Bukkit/Spigot/Paper 的属性药水插件。插�
 
 当前版本面向 Java 8 构建，主要兼容 1.12.2 服务端环境。
 
+完整文档见 [Wiki](wiki/Home.md)。
+
 ## 功能
 
 - 支持 AttributePlus 2/3、SX-Attribute 2/3 属性系统。
-- 支持普通交互触发、物品消耗触发、DragonCore/GermPlugin/CloudPick 按键触发。
+- 支持普通交互触发、物品消耗触发、DragonCore/GermPlugin/CloudPick/ArcartX 按键触发。
 - 支持按键长按 `press`，DragonCore 可显示按压进度 HUD。
 - 支持主手/副手使用，优先判断副手，再判断主手。
 - 支持 SQLite 和 MySQL 存储，兼容旧版数据读取。
@@ -32,6 +34,7 @@ AttributePotion 是一个面向 Bukkit/Spigot/Paper 的属性药水插件。插�
 - DragonCore：按键触发和 press HUD
 - GermPlugin：按键触发
 - CloudPick：按键触发
+- ArcartX：按键触发
 - SkillAPI：魔力恢复
 - Yetzirah：魔力恢复
 
@@ -120,7 +123,7 @@ plugins/AttributePotion/potion/
     - RIGHT_CLICK_AIR
     - RIGHT_CLICK_BLOCK
   conditions:
-    - '%player_level%>=10<->&c等级不足，无法使用 %id%'
+    - '%player_level%>=10<->&c等级不足，无法使用 {id}'
   time: 10.0
   attributes:
     物理伤害: '100'
@@ -133,10 +136,10 @@ plugins/AttributePotion/potion/
     hunger: '2<->5<->0'
   actions:
     success:
-      - '[msg]&a成功使用 %id%'
+      - '[msg]&a成功使用 {id}'
       - '[console]give %player_name% diamond 1'
     end:
-      - '[msg]&c%id% 效果结束'
+      - '[msg]&c{id} 效果结束'
     tick:
       20:
         - '[msg]&a每秒执行一次'
@@ -361,12 +364,14 @@ gradlew.bat build
 build/libs/AttributePotion-版本号.jar
 ```
 
-注意：当前 jar 会内置 HikariCP、Gson、exp4j、SQLite JDBC 和 MySQL Connector/J，因此体积较大。若只需要 SQLite 或只需要 MySQL，可以拆分构建版本减少体积。
+jar 内置 HikariCP、Gson、exp4j，不内置数据库驱动：1.12.2 服务端自带 SQLite 和 MySQL 5 驱动，要用 MySQL 8 驱动需要自己提供给服务端。
+
+构建前需要把没有公开仓库的依赖放进 `libs/`，见 [安装与构建](wiki/安装与构建.md)。
 
 ## 注意事项
 
-- 推荐使用 NBT 匹配药水，名称和 Lore 匹配更容易被其他插件修改影响。
+- 推荐使用 NBT 匹配药水，名称和 Lore 匹配更容易被其他插件修改或伪造。名称模式下 `anvil-protect` 只能拦截原版铁砧。
 - `contain: false` 性能更稳定，配置也更可控。
 - 按键药水需要在 `key-slots` 中配置按键对应槽位。
 - DragonCore HUD 文件会发送到客户端 `Gui/AttributePotion/press-hud.yml`，打开名为 `AttributePotion/press-hud`。
-- CloudPick jar 如果是 Java 16 编译版本，不能直接在 Java 8 环境下作为编译依赖；当前项目通过反射兼容运行期调用。
+- CloudPick jar 如果是 Java 16 编译版本，不能直接在 Java 8 环境下作为编译依赖，当前项目通过反射调用。运行环境是 Java 8 时这样的 CloudPick 无法加载，按键接入会被跳过并在后台提示。
