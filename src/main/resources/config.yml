@@ -31,8 +31,8 @@ mysql:
   file_name: AttributePotion
   # 旧版数据表名。新数据写入 <table_name>_profile 表，只能含字母、数字和下划线，其他字符会被替换成下划线
   table_name: data
-  # MySQL 驱动类（仅 MySQL）。1.12.2 服务端自带 MySQL 5 驱动：com.mysql.jdbc.Driver
-  # 要用 MySQL 8 驱动 com.mysql.cj.jdbc.Driver 时，需要自己把驱动提供给服务端，本插件不内置驱动
+  # MySQL 驱动类（仅 MySQL），本插件不内置驱动。com.mysql.jdbc.Driver 在 1.12.2 和 1.21.11 服务端都能用
+  # com.mysql.cj.jdbc.Driver 只有高版本服务端自带，1.12.2 要用它需要自己把驱动提供给服务端
   driver: 'com.mysql.jdbc.Driver'
   # 连接串附加参数（仅 MySQL），必须以问号开头
   jdbc: '?useSSL=false&useUnicode=true&characterEncoding=utf8'

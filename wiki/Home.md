@@ -1,6 +1,6 @@
 # AttributePotion Wiki
 
-AttributePotion 是面向 Bukkit/Spigot/Paper 1.12.2 的属性药水插件。它按物品名、Lore 或 NBT 识别药水，使用后给玩家加属性、原版效果、恢复效果，并执行配置好的动作。
+AttributePotion 是面向 Bukkit/Spigot/Paper 1.12.2 到 1.21.x 的属性药水插件。它按物品名、Lore 或 NBT 识别药水，使用后给玩家加属性、原版效果、恢复效果，并执行配置好的动作。
 
 ## 目录
 
